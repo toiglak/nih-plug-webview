@@ -1,10 +1,9 @@
-window.sendToPlugin = function (msg) {
-  window.ipc.postMessage(JSON.stringify(msg));
-}
+window.plugin = {};
 
-window.onPluginMessage = function() {};
+window.plugin.send_message = (message) => {
+  window.ipc.postMessage && window.ipc.postMessage(JSON.stringify(message));
+};
 
-window.onPluginMessageInternal = function(msg) {
-  const json = JSON.parse(msg);
-  window.onPluginMessage && window.onPluginMessage(json);
-}
+window.plugin.on_message_internal = (message) => {
+  window.plugin.on_message && window.plugin.on_message(JSON.parse(message));
+};
