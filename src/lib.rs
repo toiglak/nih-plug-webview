@@ -5,7 +5,10 @@ use nih_plug::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{borrow::Cow, sync::Arc};
+use std::{
+    borrow::Cow,
+    sync::{Arc, Mutex},
+};
 use wry::{
     http::{Request, Response},
     WebContext, WebView, WebViewBuilder,
@@ -21,7 +24,7 @@ pub use wry::http;
 pub use baseview::{DropData, DropEffect, EventStatus, MouseEvent, Window};
 pub use keyboard_types::*;
 
-type EventLoopHandler = dyn Fn(&WindowHandler, ParamSetter, &mut Window) + Send + Sync;
+type EventLoopHandler = dyn FnMut(&WindowHandler, ParamSetter, &mut Window) + Send + Sync;
 type KeyboardHandler = dyn Fn(KeyboardEvent) -> bool + Send + Sync;
 type MouseHandler = dyn Fn(MouseEvent) -> EventStatus + Send + Sync;
 type CustomProtocolHandler =
@@ -30,7 +33,7 @@ type CustomProtocolHandler =
 pub struct WebViewEditor {
     state: Arc<WebViewState>,
     source: Arc<HTMLSource>,
-    event_loop_handler: Arc<EventLoopHandler>,
+    event_loop_handler: Arc<Mutex<Option<Box<EventLoopHandler>>>>,
     keyboard_handler: Arc<KeyboardHandler>,
     mouse_handler: Arc<MouseHandler>,
     custom_protocol: Option<(String, Arc<CustomProtocolHandler>)>,
@@ -50,7 +53,7 @@ impl WebViewEditor {
             source: Arc::new(source),
             developer_mode: false,
             background_color: (255, 255, 255, 255),
-            event_loop_handler: Arc::new(|_, _, _| {}),
+            event_loop_handler: Arc::new(Mutex::new(None)),
             keyboard_handler: Arc::new(|_| false),
             mouse_handler: Arc::new(|_| EventStatus::Ignored),
             custom_protocol: None,
@@ -75,9 +78,9 @@ impl WebViewEditor {
 
     pub fn with_event_loop<F>(mut self, handler: F) -> Self
     where
-        F: Fn(&WindowHandler, ParamSetter, &mut baseview::Window) + 'static + Send + Sync,
+        F: FnMut(&WindowHandler, ParamSetter, &mut baseview::Window) + 'static + Send + Sync,
     {
-        self.event_loop_handler = Arc::new(handler);
+        self.event_loop_handler = Arc::new(Mutex::new(Some(Box::new(handler))));
         self
     }
 
@@ -105,7 +108,7 @@ impl WebViewEditor {
 
 pub struct WindowHandler {
     context: Arc<dyn GuiContext>,
-    event_loop_handler: Arc<EventLoopHandler>,
+    event_loop_handler: Arc<Mutex<Option<Box<EventLoopHandler>>>>,
     keyboard_handler: Arc<KeyboardHandler>,
     mouse_handler: Arc<MouseHandler>,
     webview: WebView,
@@ -162,7 +165,12 @@ impl WindowHandler {
 impl baseview::WindowHandler for WindowHandler {
     fn on_frame(&mut self, window: &mut baseview::Window) {
         let setter = ParamSetter::new(&*self.context);
-        (self.event_loop_handler)(&self, setter, window);
+        let handler = self.event_loop_handler.lock().unwrap().take();
+
+        if let Some(mut handler) = handler {
+            handler(self, setter, window);
+            *self.event_loop_handler.lock().unwrap() = Some(handler);
+        }
     }
 
     fn on_event(&mut self, _window: &mut baseview::Window, event: Event) -> EventStatus {
@@ -224,7 +232,7 @@ impl Editor for WebViewEditor {
                     if let Ok(json_value) = serde_json::from_str(&msg) {
                         let _ = events_sender.send(json_value);
                     } else {
-                        panic!("Invalid JSON from web view: {}.", msg);
+                        panic!("Invalid JSON from webview: {}.", msg);
                     }
                 })
                 .with_background_color(background_color);
