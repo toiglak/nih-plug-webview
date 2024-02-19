@@ -143,7 +143,7 @@ impl WindowHandler {
         if let Ok(json_str) = serde_json::to_string(&json) {
             self.webview
                 .evaluate_script(&format!(
-                    "window.plugin.on_message_internal(`{}`);",
+                    "window.plugin.__host.recvMessage(`{}`);",
                     json_str
                 ))
                 .unwrap();
@@ -227,7 +227,6 @@ impl Editor for WebViewEditor {
                 .with_accept_first_mouse(true)
                 .with_devtools(developer_mode)
                 .with_web_context(&mut web_context)
-                .with_initialization_script(include_str!("script.js"))
                 .with_ipc_handler(move |msg: String| {
                     if let Ok(json_value) = serde_json::from_str(&msg) {
                         let _ = events_sender.send(json_value);
