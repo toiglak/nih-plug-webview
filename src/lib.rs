@@ -249,13 +249,18 @@ impl Editor for WebViewEditor {
                 HTMLSource::URL(url) => webview_builder.with_url(*url),
             }
             .unwrap()
-            .build();
+            .build()
+            .expect("Failed to construct webview. {}");
+
+            // Automatically open devtools in debug.
+            #[cfg(debug_assertions)]
+            webview.open_devtools();
 
             WindowHandler {
                 state,
                 context,
                 event_loop_handler,
-                webview: webview.unwrap_or_else(|e| panic!("Failed to construct webview. {}", e)),
+                webview,
                 events_receiver,
                 keyboard_handler,
                 mouse_handler,
