@@ -174,6 +174,9 @@ impl baseview::WindowHandler for WindowHandler {
     }
 
     fn on_event(&mut self, _window: &mut baseview::Window, event: Event) -> EventStatus {
+        // Focus the webview on any event.
+        self.webview.focus();
+
         match event {
             Event::Keyboard(event) => {
                 if (self.keyboard_handler)(event) {
@@ -266,6 +269,7 @@ impl Editor for WebViewEditor {
                 mouse_handler,
             }
         });
+
         return Box::new(WrapSend {
             _window_handle: window_handle,
         });
