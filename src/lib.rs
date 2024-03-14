@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     borrow::Cow,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 use wry::{
     http::{Request, Response},
@@ -33,12 +36,14 @@ type CustomProtocolHandler =
 pub struct WebViewEditor {
     state: Arc<WebViewState>,
     source: Arc<HTMLSource>,
+    // TODO: Use trait to implement this more idiomatically.
     event_loop_handler: Arc<Mutex<Option<Box<EventLoopHandler>>>>,
     keyboard_handler: Arc<KeyboardHandler>,
     mouse_handler: Arc<MouseHandler>,
     custom_protocol: Option<(String, Arc<CustomProtocolHandler>)>,
     developer_mode: bool,
     background_color: (u8, u8, u8, u8),
+    params_changed: Arc<AtomicBool>,
 }
 
 pub enum HTMLSource {
@@ -57,6 +62,7 @@ impl WebViewEditor {
             keyboard_handler: Arc::new(|_| false),
             mouse_handler: Arc::new(|_| EventStatus::Ignored),
             custom_protocol: None,
+            params_changed: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -106,88 +112,6 @@ impl WebViewEditor {
     }
 }
 
-pub struct WindowHandler {
-    context: Arc<dyn GuiContext>,
-    event_loop_handler: Arc<Mutex<Option<Box<EventLoopHandler>>>>,
-    keyboard_handler: Arc<KeyboardHandler>,
-    mouse_handler: Arc<MouseHandler>,
-    webview: WebView,
-    events_receiver: Receiver<Value>,
-    state: Arc<WebViewState>,
-}
-
-impl WindowHandler {
-    pub fn resize(&self, window: &mut baseview::Window, width: u32, height: u32) {
-        let old = self.state.size.swap((width, height));
-
-        if !self.context.request_resize() {
-            // Resize failed.
-            self.state.size.store(old);
-            return;
-        }
-
-        window.resize(Size {
-            width: width as f64,
-            height: height as f64,
-        });
-        self.webview.set_bounds(wry::Rect {
-            x: 0,
-            y: 0,
-            width,
-            height,
-        });
-    }
-
-    pub fn send_json<T: serde::Serialize>(&self, json: T) -> Result<(), String> {
-        // TODO: proper error handling
-        if let Ok(json_str) = serde_json::to_string(&json) {
-            self.webview
-                .evaluate_script(&format!("window.plugin.__ipc.recvMessage(`{}`);", json_str))
-                .unwrap();
-            return Ok(());
-        } else {
-            return Err("Can't convert JSON to string.".to_owned());
-        }
-    }
-
-    pub fn next_event(&self) -> Result<Value, crossbeam::channel::TryRecvError> {
-        self.events_receiver.try_recv()
-    }
-
-    pub fn size(&self) -> (u32, u32) {
-        self.state.size.load()
-    }
-}
-
-impl baseview::WindowHandler for WindowHandler {
-    fn on_frame(&mut self, window: &mut baseview::Window) {
-        let setter = ParamSetter::new(&*self.context);
-        let handler = self.event_loop_handler.lock().unwrap().take();
-
-        if let Some(mut handler) = handler {
-            handler(self, setter, window);
-            *self.event_loop_handler.lock().unwrap() = Some(handler);
-        }
-    }
-
-    fn on_event(&mut self, _window: &mut baseview::Window, event: Event) -> EventStatus {
-        // Focus the webview on any event.
-        self.webview.focus();
-
-        match event {
-            Event::Keyboard(event) => {
-                if (self.keyboard_handler)(event) {
-                    EventStatus::Captured
-                } else {
-                    EventStatus::Ignored
-                }
-            }
-            Event::Mouse(mouse_event) => (self.mouse_handler)(mouse_event),
-            _ => EventStatus::Ignored,
-        }
-    }
-}
-
 impl Editor for WebViewEditor {
     fn spawn(
         &self,
@@ -211,6 +135,7 @@ impl Editor for WebViewEditor {
         let event_loop_handler = self.event_loop_handler.clone();
         let keyboard_handler = self.keyboard_handler.clone();
         let mouse_handler = self.mouse_handler.clone();
+        let params_changed = self.params_changed.clone();
 
         let window_handle = baseview::Window::open_parented(&parent, options, move |window| {
             let (events_sender, events_receiver) = unbounded();
@@ -264,6 +189,7 @@ impl Editor for WebViewEditor {
                 events_receiver,
                 keyboard_handler,
                 mouse_handler,
+                params_changed: params_changed.clone(),
             }
         });
 
@@ -281,13 +207,111 @@ impl Editor for WebViewEditor {
         return false;
     }
 
-    fn param_values_changed(&self) {}
+    fn param_values_changed(&self) {
+        self.params_changed.store(true, Ordering::SeqCst);
+    }
 
-    fn param_value_changed(&self, _id: &str, _normalized_value: f32) {}
+    fn param_value_changed(&self, _id: &str, _normalized_value: f32) {
+        self.params_changed.store(true, Ordering::SeqCst);
+    }
 
-    fn param_modulation_changed(&self, _id: &str, _modulation_offset: f32) {}
+    fn param_modulation_changed(&self, _id: &str, _modulation_offset: f32) {
+        self.params_changed.store(true, Ordering::SeqCst);
+    }
 }
 
+pub struct WindowHandler {
+    context: Arc<dyn GuiContext>,
+    event_loop_handler: Arc<Mutex<Option<Box<EventLoopHandler>>>>,
+    keyboard_handler: Arc<KeyboardHandler>,
+    mouse_handler: Arc<MouseHandler>,
+    webview: WebView,
+    events_receiver: Receiver<Value>,
+    state: Arc<WebViewState>,
+    pub params_changed: Arc<AtomicBool>,
+}
+
+impl WindowHandler {
+    pub fn resize(&self, window: &mut baseview::Window, width: u32, height: u32) {
+        let old = self.state.size.swap((width, height));
+
+        if !self.context.request_resize() {
+            // Resize failed.
+            self.state.size.store(old);
+            return;
+        }
+
+        window.resize(Size {
+            width: width as f64,
+            height: height as f64,
+        });
+        self.webview.set_bounds(wry::Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        });
+    }
+
+    pub fn send_json<T: serde::Serialize>(&self, json: T) -> Result<(), String> {
+        // TODO: proper error handling
+        if let Ok(json_str) = serde_json::to_string(&json) {
+            self.webview
+                .evaluate_script(&format!("window.plugin.__ipc.recvMessage(`{}`);", json_str))
+                .unwrap();
+            return Ok(());
+        } else {
+            return Err("Can't convert JSON to string.".to_owned());
+        }
+    }
+
+    pub fn next_event(&self) -> Result<Value, crossbeam::channel::TryRecvError> {
+        self.events_receiver.try_recv()
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        self.state.size.load()
+    }
+}
+
+impl baseview::WindowHandler for WindowHandler {
+    fn on_frame(&mut self, window: &mut baseview::Window) {
+        let setter = ParamSetter::new(&*self.context);
+        let handler = self.event_loop_handler.lock().unwrap().take();
+
+        if let Some(mut handler) = handler {
+            handler(self, setter, window);
+            *self.event_loop_handler.lock().unwrap() = Some(handler);
+            self.params_changed.store(false, Ordering::SeqCst);
+        }
+    }
+
+    fn on_event(&mut self, _window: &mut baseview::Window, event: Event) -> EventStatus {
+        // Focus the webview on any event.
+        self.webview.focus();
+
+        match event {
+            Event::Keyboard(event) => {
+                if (self.keyboard_handler)(event) {
+                    EventStatus::Captured
+                } else {
+                    EventStatus::Ignored
+                }
+            }
+            Event::Mouse(event) => (self.mouse_handler)(event),
+            // TODO: Fix upstream, these aren't called at all on macos...
+            Event::Window(event) => match event {
+                baseview::WindowEvent::Resized(_) => EventStatus::Ignored,
+                baseview::WindowEvent::Focused => EventStatus::Ignored,
+                baseview::WindowEvent::Unfocused => EventStatus::Ignored,
+                baseview::WindowEvent::WillClose => {
+                    self.webview.close_devtools();
+                    EventStatus::Captured
+                }
+            },
+        }
+    }
+}
 /// State for an `nih_plug_egui` editor.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WebViewState {
