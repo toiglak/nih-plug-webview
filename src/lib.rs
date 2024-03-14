@@ -33,11 +33,13 @@ pub enum HTMLSource {
 }
 
 pub trait EditorHandler: Sized + Send + Sync + 'static {
-    type ToPluginMessage: DeserializeOwned;
-    type ToEditorMessage: Serialize;
+    /// Message type sent from the editor to the plugin.
+    type ToPlugin: DeserializeOwned;
+    /// Message type sent from the plugin to the editor.
+    type ToEditor: Serialize;
 
     fn on_frame(&mut self, cx: &mut Context<Self>);
-    fn on_message(&mut self, cx: &mut Context<Self>, message: Self::ToPluginMessage);
+    fn on_message(&mut self, cx: &mut Context<Self>, message: Self::ToPlugin);
     fn on_window_event(&mut self, cx: &mut Context<Self>, event: WindowEvent) -> WindowEventStatus {
         let _ = (cx, event);
         WindowEventStatus::Ignored
@@ -47,12 +49,12 @@ pub trait EditorHandler: Sized + Send + Sync + 'static {
 // TODO: Instead of this, just cast create ContextAny that has the same layout
 // as Context<()> transmute it.
 impl EditorHandler for () {
-    type ToPluginMessage = ();
-    type ToEditorMessage = ();
+    type ToPlugin = ();
+    type ToEditor = ();
 
     fn on_frame(&mut self, _cx: &mut Context<Self>) {}
 
-    fn on_message(&mut self, _cx: &mut Context<Self>, message: Self::ToPluginMessage) {
+    fn on_message(&mut self, _cx: &mut Context<Self>, message: Self::ToPlugin) {
         match message {
             _ => {
                 // Ignore
@@ -94,11 +96,11 @@ pub struct Context<'a, 'b, H: EditorHandler> {
 }
 
 impl<'a, 'b, H: EditorHandler> Context<'a, 'b, H> {
-    pub fn send_message(&mut self, message: H::ToEditorMessage) {
+    pub fn send_message(&mut self, message: H::ToEditor) {
         self.window_handler.send_json(message).unwrap();
     }
 
-    pub fn next_message(&mut self) -> Option<H::ToPluginMessage> {
+    pub fn next_message(&mut self) -> Option<H::ToPlugin> {
         self.window_handler
             .next_event()
             .map(|event| {
