@@ -136,8 +136,8 @@ pub struct WebViewEditor {
 }
 
 pub enum HTMLSource {
-    String(&'static str),
-    URL(&'static str),
+    String(String),
+    URL(String),
 }
 
 impl WebViewEditor {
@@ -260,8 +260,8 @@ impl Editor for WebViewEditor {
             }
 
             let webview = match source.as_ref() {
-                HTMLSource::String(html_str) => webview_builder.with_html(*html_str),
-                HTMLSource::URL(url) => webview_builder.with_url(*url),
+                HTMLSource::String(html) => webview_builder.with_html(html),
+                HTMLSource::URL(url) => webview_builder.with_url(url.as_str()),
             }
             .unwrap()
             .build()
