@@ -3,10 +3,11 @@ use nih_plug::{
     params::persist::PersistentField,
     prelude::{Editor, GuiContext, ParamSetter},
 };
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     borrow::Cow,
+    marker::PhantomData,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -33,10 +34,98 @@ type MouseHandler = dyn Fn(MouseEvent) -> EventStatus + Send + Sync;
 type CustomProtocolHandler =
     dyn Fn(&Request<Vec<u8>>) -> wry::Result<Response<Cow<'static, [u8]>>> + Send + Sync;
 
+#[repr(C)]
+pub struct Context<'a, 'b, H: EditorHandler> {
+    window_handler: &'a WindowHandler,
+    window: &'a mut Window<'b>,
+    _p: PhantomData<H>,
+}
+
+impl<'a, 'b, H: EditorHandler> Context<'a, 'b, H> {
+    pub fn send_message(&mut self, message: H::ToEditorMessage) {
+        self.window_handler.send_json(message).unwrap();
+    }
+
+    pub fn next_message(&mut self) -> Option<H::ToPluginMessage> {
+        self.window_handler
+            .next_event()
+            .map(|event| {
+                serde_json::from_value(event).expect("Could not parse event from webview into T.")
+            })
+            .ok()
+    }
+
+    pub fn resize_window(&mut self, width: u32, height: u32) {
+        self.window_handler.resize(self.window, width, height)
+    }
+
+    pub fn params_changed(&mut self) -> bool {
+        self.window_handler.params_changed.load(Ordering::SeqCst)
+    }
+
+    pub fn setter(&self) -> ParamSetter {
+        ParamSetter::new(&*self.window_handler.context)
+    }
+}
+
+trait EditorHandlerAny: Send + Sync {
+    fn on_frame(&mut self, cx: &mut Context<()>);
+    #[allow(unused)]
+    fn on_message(&mut self, cx: &mut Context<()>, message: Box<dyn std::any::Any>);
+}
+
+impl<H: EditorHandler> EditorHandlerAny for H {
+    fn on_frame(&mut self, cx: &mut Context<()>) {
+        let cx = unsafe { std::mem::transmute(cx) };
+        EditorHandler::on_frame(self, cx)
+    }
+
+    fn on_message(&mut self, cx: &mut Context<()>, message: Box<dyn std::any::Any>) {
+        let cx = unsafe { std::mem::transmute(cx) };
+        EditorHandler::on_message(self, cx, *message.downcast().unwrap())
+    }
+}
+
+pub trait EditorHandler: Sized + Send + Sync + 'static {
+    type ToPluginMessage: DeserializeOwned;
+    type ToEditorMessage: Serialize;
+
+    fn on_frame(&mut self, cx: &mut Context<Self>);
+    fn on_message(&mut self, cx: &mut Context<Self>, message: Self::ToPluginMessage);
+}
+
+impl EditorHandler for () {
+    type ToPluginMessage = ();
+    type ToEditorMessage = ();
+
+    fn on_frame(&mut self, _cx: &mut Context<Self>) {}
+
+    fn on_message(&mut self, _cx: &mut Context<Self>, message: Self::ToPluginMessage) {
+        match message {
+            _ => {
+                // Ignore
+            }
+        }
+    }
+}
+
+pub struct WebviewEditor {}
+
+impl WebviewEditor {
+    pub fn new(
+        source: HTMLSource,
+        webview_state: Arc<WebViewState>,
+        handler: impl EditorHandler,
+    ) -> WebViewEditor {
+        // Temporarily
+        WebViewEditor::new(source, webview_state, handler).with_developer_mode(true)
+    }
+}
+
 pub struct WebViewEditor {
+    handler: Arc<Mutex<dyn EditorHandlerAny>>,
     state: Arc<WebViewState>,
     source: Arc<HTMLSource>,
-    // TODO: Use trait to implement this more idiomatically.
     event_loop_handler: Arc<Mutex<Option<Box<EventLoopHandler>>>>,
     keyboard_handler: Arc<KeyboardHandler>,
     mouse_handler: Arc<MouseHandler>,
@@ -52,8 +141,9 @@ pub enum HTMLSource {
 }
 
 impl WebViewEditor {
-    pub fn new(source: HTMLSource, state: Arc<WebViewState>) -> Self {
+    pub fn new(source: HTMLSource, state: Arc<WebViewState>, handler: impl EditorHandler) -> Self {
         Self {
+            handler: Arc::new(Mutex::new(handler)),
             state,
             source: Arc::new(source),
             developer_mode: false,
@@ -127,12 +217,12 @@ impl Editor for WebViewEditor {
             title: "Plug-in".to_owned(),
         };
 
+        let handler = self.handler.clone();
         let state = self.state.clone();
         let developer_mode = self.developer_mode;
         let source = self.source.clone();
         let background_color = self.background_color;
         let custom_protocol = self.custom_protocol.clone();
-        let event_loop_handler = self.event_loop_handler.clone();
         let keyboard_handler = self.keyboard_handler.clone();
         let mouse_handler = self.mouse_handler.clone();
         let params_changed = self.params_changed.clone();
@@ -182,9 +272,9 @@ impl Editor for WebViewEditor {
             webview.open_devtools();
 
             WindowHandler {
+                handler,
                 state,
                 context,
-                event_loop_handler,
                 webview,
                 events_receiver,
                 keyboard_handler,
@@ -221,8 +311,8 @@ impl Editor for WebViewEditor {
 }
 
 pub struct WindowHandler {
+    handler: Arc<Mutex<dyn EditorHandlerAny>>,
     context: Arc<dyn GuiContext>,
-    event_loop_handler: Arc<Mutex<Option<Box<EventLoopHandler>>>>,
     keyboard_handler: Arc<KeyboardHandler>,
     mouse_handler: Arc<MouseHandler>,
     webview: WebView,
@@ -276,14 +366,22 @@ impl WindowHandler {
 
 impl baseview::WindowHandler for WindowHandler {
     fn on_frame(&mut self, window: &mut baseview::Window) {
-        let setter = ParamSetter::new(&*self.context);
-        let handler = self.event_loop_handler.lock().unwrap().take();
+        let _setter = ParamSetter::new(&*self.context);
+        let mut handler = self.handler.lock().unwrap();
 
-        if let Some(mut handler) = handler {
-            handler(self, setter, window);
-            *self.event_loop_handler.lock().unwrap() = Some(handler);
-            self.params_changed.store(false, Ordering::SeqCst);
-        }
+        let mut cx = Context {
+            window_handler: self,
+            window,
+            _p: PhantomData,
+        };
+
+        handler.on_frame(&mut cx);
+
+        // if let Some(mut handler) = handler {
+        //     handler(self, setter, window);
+        //     *self.event_loop_handler.lock().unwrap() = Some(handler);
+        //     self.params_changed.store(false, Ordering::SeqCst);
+        // }
     }
 
     fn on_event(&mut self, _window: &mut baseview::Window, event: Event) -> EventStatus {
