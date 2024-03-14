@@ -6,17 +6,13 @@ use nih_plug::{
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    borrow::Cow,
     marker::PhantomData,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
 };
-use wry::{
-    http::{Request, Response},
-    WebContext, WebView, WebViewBuilder,
-};
+use wry::{WebContext, WebView, WebViewBuilder};
 
 use crossbeam::{
     atomic::AtomicCell,
@@ -28,11 +24,53 @@ pub use wry::http;
 pub use baseview::{DropData, DropEffect, EventStatus, MouseEvent, Window};
 pub use keyboard_types::*;
 
-type EventLoopHandler = dyn FnMut(&WindowHandler, ParamSetter, &mut Window) + Send + Sync;
-type KeyboardHandler = dyn Fn(KeyboardEvent) -> bool + Send + Sync;
-type MouseHandler = dyn Fn(MouseEvent) -> EventStatus + Send + Sync;
-type CustomProtocolHandler =
-    dyn Fn(&Request<Vec<u8>>) -> wry::Result<Response<Cow<'static, [u8]>>> + Send + Sync;
+pub enum HTMLSource {
+    String(String),
+    URL(String),
+}
+
+pub trait EditorHandler: Sized + Send + Sync + 'static {
+    type ToPluginMessage: DeserializeOwned;
+    type ToEditorMessage: Serialize;
+
+    fn on_frame(&mut self, cx: &mut Context<Self>);
+    fn on_message(&mut self, cx: &mut Context<Self>, message: Self::ToPluginMessage);
+}
+
+// TODO: Instead of this, just cast create ContextAny that has the same layout
+// as Context<()> transmute it.
+impl EditorHandler for () {
+    type ToPluginMessage = ();
+    type ToEditorMessage = ();
+
+    fn on_frame(&mut self, _cx: &mut Context<Self>) {}
+
+    fn on_message(&mut self, _cx: &mut Context<Self>, message: Self::ToPluginMessage) {
+        match message {
+            _ => {
+                // Ignore
+            }
+        }
+    }
+}
+
+trait EditorHandlerAny: Send + Sync {
+    fn on_frame(&mut self, cx: &mut Context<()>);
+    #[allow(unused)]
+    fn on_message(&mut self, cx: &mut Context<()>, message: Box<dyn std::any::Any>);
+}
+
+impl<H: EditorHandler> EditorHandlerAny for H {
+    fn on_frame(&mut self, cx: &mut Context<()>) {
+        let cx = unsafe { std::mem::transmute(cx) };
+        EditorHandler::on_frame(self, cx)
+    }
+
+    fn on_message(&mut self, cx: &mut Context<()>, message: Box<dyn std::any::Any>) {
+        let cx = unsafe { std::mem::transmute(cx) };
+        EditorHandler::on_message(self, cx, *message.downcast().unwrap())
+    }
+}
 
 #[repr(C)]
 pub struct Context<'a, 'b, H: EditorHandler> {
@@ -68,141 +106,53 @@ impl<'a, 'b, H: EditorHandler> Context<'a, 'b, H> {
     }
 }
 
-trait EditorHandlerAny: Send + Sync {
-    fn on_frame(&mut self, cx: &mut Context<()>);
-    #[allow(unused)]
-    fn on_message(&mut self, cx: &mut Context<()>, message: Box<dyn std::any::Any>);
+pub struct WebviewEditor {
+    handler: Arc<Mutex<dyn EditorHandlerAny>>,
+    state: Arc<WebViewState>,
+    source: Arc<HTMLSource>,
+    params_changed: Arc<AtomicBool>,
+    fn_with_builder:
+        Mutex<Option<Box<dyn FnOnce(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static>>>,
 }
-
-impl<H: EditorHandler> EditorHandlerAny for H {
-    fn on_frame(&mut self, cx: &mut Context<()>) {
-        let cx = unsafe { std::mem::transmute(cx) };
-        EditorHandler::on_frame(self, cx)
-    }
-
-    fn on_message(&mut self, cx: &mut Context<()>, message: Box<dyn std::any::Any>) {
-        let cx = unsafe { std::mem::transmute(cx) };
-        EditorHandler::on_message(self, cx, *message.downcast().unwrap())
-    }
-}
-
-pub trait EditorHandler: Sized + Send + Sync + 'static {
-    type ToPluginMessage: DeserializeOwned;
-    type ToEditorMessage: Serialize;
-
-    fn on_frame(&mut self, cx: &mut Context<Self>);
-    fn on_message(&mut self, cx: &mut Context<Self>, message: Self::ToPluginMessage);
-}
-
-impl EditorHandler for () {
-    type ToPluginMessage = ();
-    type ToEditorMessage = ();
-
-    fn on_frame(&mut self, _cx: &mut Context<Self>) {}
-
-    fn on_message(&mut self, _cx: &mut Context<Self>, message: Self::ToPluginMessage) {
-        match message {
-            _ => {
-                // Ignore
-            }
-        }
-    }
-}
-
-pub struct WebviewEditor {}
 
 impl WebviewEditor {
+    /// Creates a new `WebviewEditor`.
     pub fn new(
         source: HTMLSource,
         webview_state: Arc<WebViewState>,
         handler: impl EditorHandler,
-    ) -> WebViewEditor {
-        // Temporarily
-        WebViewEditor::new(source, webview_state, handler).with_developer_mode(true)
-    }
-}
-
-pub struct WebViewEditor {
-    handler: Arc<Mutex<dyn EditorHandlerAny>>,
-    state: Arc<WebViewState>,
-    source: Arc<HTMLSource>,
-    event_loop_handler: Arc<Mutex<Option<Box<EventLoopHandler>>>>,
-    keyboard_handler: Arc<KeyboardHandler>,
-    mouse_handler: Arc<MouseHandler>,
-    custom_protocol: Option<(String, Arc<CustomProtocolHandler>)>,
-    developer_mode: bool,
-    background_color: (u8, u8, u8, u8),
-    params_changed: Arc<AtomicBool>,
-}
-
-pub enum HTMLSource {
-    String(String),
-    URL(String),
-}
-
-impl WebViewEditor {
-    pub fn new(source: HTMLSource, state: Arc<WebViewState>, handler: impl EditorHandler) -> Self {
-        Self {
+    ) -> WebviewEditor {
+        WebviewEditor {
             handler: Arc::new(Mutex::new(handler)),
-            state,
+            state: webview_state,
             source: Arc::new(source),
-            developer_mode: false,
-            background_color: (255, 255, 255, 255),
-            event_loop_handler: Arc::new(Mutex::new(None)),
-            keyboard_handler: Arc::new(|_| false),
-            mouse_handler: Arc::new(|_| EventStatus::Ignored),
-            custom_protocol: None,
             params_changed: Arc::new(AtomicBool::new(false)),
+            fn_with_builder: Mutex::new(None),
         }
     }
 
-    pub fn with_background_color(mut self, background_color: (u8, u8, u8, u8)) -> Self {
-        self.background_color = background_color;
-        self
-    }
-
-    pub fn with_custom_protocol<F>(mut self, name: String, handler: F) -> Self
-    where
-        F: Fn(&Request<Vec<u8>>) -> wry::Result<Response<Cow<'static, [u8]>>>
-            + 'static
-            + Send
-            + Sync,
-    {
-        self.custom_protocol = Some((name, Arc::new(handler)));
-        self
-    }
-
-    pub fn with_event_loop<F>(mut self, handler: F) -> Self
-    where
-        F: FnMut(&WindowHandler, ParamSetter, &mut baseview::Window) + 'static + Send + Sync,
-    {
-        self.event_loop_handler = Arc::new(Mutex::new(Some(Box::new(handler))));
-        self
-    }
-
-    pub fn with_developer_mode(mut self, mode: bool) -> Self {
-        self.developer_mode = mode;
-        self
-    }
-
-    pub fn with_keyboard_handler<F>(mut self, handler: F) -> Self
-    where
-        F: Fn(KeyboardEvent) -> bool + Send + Sync + 'static,
-    {
-        self.keyboard_handler = Arc::new(handler);
-        self
-    }
-
-    pub fn with_mouse_handler<F>(mut self, handler: F) -> Self
-    where
-        F: Fn(MouseEvent) -> EventStatus + Send + Sync + 'static,
-    {
-        self.mouse_handler = Arc::new(handler);
-        self
+    /// Creates a new `WebviewEditor` with a callback which allows to configure
+    /// `WebViewBuilder`. Do note that some options will be overridden by the
+    /// `EditorHandler` abstraction in order for it to function properly. To see
+    /// which options are overridden, see the `Editor::spawn` implementation
+    /// for the `WebviewEditor`.
+    pub fn new_with_webview(
+        source: HTMLSource,
+        webview_state: Arc<WebViewState>,
+        handler: impl EditorHandler,
+        f: impl FnOnce(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static,
+    ) -> WebviewEditor {
+        WebviewEditor {
+            handler: Arc::new(Mutex::new(handler)),
+            state: webview_state,
+            source: Arc::new(source),
+            params_changed: Arc::new(AtomicBool::new(false)),
+            fn_with_builder: Mutex::new(Some(Box::new(f))),
+        }
     }
 }
 
-impl Editor for WebViewEditor {
+impl Editor for WebviewEditor {
     fn spawn(
         &self,
         parent: nih_plug::prelude::ParentWindowHandle,
@@ -219,20 +169,24 @@ impl Editor for WebViewEditor {
 
         let handler = self.handler.clone();
         let state = self.state.clone();
-        let developer_mode = self.developer_mode;
         let source = self.source.clone();
-        let background_color = self.background_color;
-        let custom_protocol = self.custom_protocol.clone();
-        let keyboard_handler = self.keyboard_handler.clone();
-        let mouse_handler = self.mouse_handler.clone();
         let params_changed = self.params_changed.clone();
+        let fn_with_builder = self.fn_with_builder.lock().unwrap().take();
 
         let window_handle = baseview::Window::open_parented(&parent, options, move |window| {
             let (events_sender, events_receiver) = unbounded();
 
             let mut web_context = WebContext::new(Some(std::env::temp_dir()));
 
-            let mut webview_builder = WebViewBuilder::new_as_child(window)
+            let mut webview_builder = WebViewBuilder::new_as_child(window);
+
+            // Apply user configuration.
+            if let Some(fn_with_builder) = fn_with_builder {
+                webview_builder = (fn_with_builder)(webview_builder);
+            }
+
+            // Set properties required by `EditorHandler` abstraction.
+            let webview_builder = webview_builder
                 .with_bounds(wry::Rect {
                     x: 0,
                     y: 0,
@@ -240,7 +194,7 @@ impl Editor for WebViewEditor {
                     height: state.size().1 as u32,
                 })
                 .with_accept_first_mouse(true)
-                .with_devtools(developer_mode)
+                // .with_devtools(developer_mode)
                 .with_web_context(&mut web_context)
                 .with_ipc_handler(move |msg: String| {
                     if let Ok(json_value) = serde_json::from_str(&msg) {
@@ -248,16 +202,7 @@ impl Editor for WebViewEditor {
                     } else {
                         panic!("Invalid JSON from webview: {}.", msg);
                     }
-                })
-                .with_background_color(background_color);
-
-            if let Some(custom_protocol) = custom_protocol.as_ref() {
-                let handler = custom_protocol.1.clone();
-                webview_builder = webview_builder
-                    .with_custom_protocol(custom_protocol.0.to_owned(), move |request| {
-                        handler(&request).unwrap()
-                    });
-            }
+                });
 
             let webview = match source.as_ref() {
                 HTMLSource::String(html) => webview_builder.with_html(html),
@@ -277,8 +222,6 @@ impl Editor for WebViewEditor {
                 context,
                 webview,
                 events_receiver,
-                keyboard_handler,
-                mouse_handler,
                 params_changed: params_changed.clone(),
             }
         });
@@ -313,8 +256,6 @@ impl Editor for WebViewEditor {
 pub struct WindowHandler {
     handler: Arc<Mutex<dyn EditorHandlerAny>>,
     context: Arc<dyn GuiContext>,
-    keyboard_handler: Arc<KeyboardHandler>,
-    mouse_handler: Arc<MouseHandler>,
     webview: WebView,
     events_receiver: Receiver<Value>,
     state: Arc<WebViewState>,
@@ -384,30 +325,31 @@ impl baseview::WindowHandler for WindowHandler {
         // }
     }
 
-    fn on_event(&mut self, _window: &mut baseview::Window, event: Event) -> EventStatus {
+    fn on_event(&mut self, _window: &mut baseview::Window, _event: Event) -> EventStatus {
         // Focus the webview on any event.
         self.webview.focus();
 
-        match event {
-            Event::Keyboard(event) => {
-                if (self.keyboard_handler)(event) {
-                    EventStatus::Captured
-                } else {
-                    EventStatus::Ignored
-                }
-            }
-            Event::Mouse(event) => (self.mouse_handler)(event),
-            // TODO: Fix upstream, these aren't called at all on macos...
-            Event::Window(event) => match event {
-                baseview::WindowEvent::Resized(_) => EventStatus::Ignored,
-                baseview::WindowEvent::Focused => EventStatus::Ignored,
-                baseview::WindowEvent::Unfocused => EventStatus::Ignored,
-                baseview::WindowEvent::WillClose => {
-                    self.webview.close_devtools();
-                    EventStatus::Captured
-                }
-            },
-        }
+        // match event {
+        //     Event::Keyboard(event) => {
+        //         if (self.keyboard_handler)(event) {
+        //             EventStatus::Captured
+        //         } else {
+        //             EventStatus::Ignored
+        //         }
+        //     }
+        //     Event::Mouse(event) => (self.mouse_handler)(event),
+        //     // TODO: Fix upstream, these aren't called at all on macos...
+        //     Event::Window(event) => match event {
+        //         baseview::WindowEvent::Resized(_) => EventStatus::Ignored,
+        //         baseview::WindowEvent::Focused => EventStatus::Ignored,
+        //         baseview::WindowEvent::Unfocused => EventStatus::Ignored,
+        //         baseview::WindowEvent::WillClose => {
+        //             self.webview.close_devtools();
+        //             EventStatus::Captured
+        //         }
+        //     },
+        // }
+        EventStatus::Ignored
     }
 }
 /// State for an `nih_plug_egui` editor.
