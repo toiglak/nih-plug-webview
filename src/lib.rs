@@ -95,34 +95,33 @@ pub struct Context<'a, 'b, H: EditorHandler> {
 }
 
 impl<'a, 'b, H: EditorHandler> Context<'a, 'b, H> {
+    /// Send a message to the plugin.
     pub fn send_message(&mut self, message: H::ToEditor) {
         self.window_handler.send_json(message);
     }
 
-    pub fn next_message(&mut self) -> Option<H::ToPlugin> {
-        self.window_handler
-            .next_event()
-            .map(|event| {
-                serde_json::from_value(event).expect("Could not parse event from webview into T.")
-            })
-            .ok()
-    }
-
-    pub fn resize_window(&mut self, width: u32, height: u32) {
+    /// Resize the window to the given size (in logical pixels).
+    ///
+    /// Do note that plugin host may refuse to resize the window, in which case
+    /// this method will return `false`.
+    pub fn resize_window(&mut self, width: u32, height: u32) -> bool {
         self.window_handler.resize(self.window, width, height)
     }
 
+    /// Returns `true` if plugin parameters changed since the last call to this method.
     pub fn params_changed(&mut self) -> bool {
         self.window_handler
             .params_changed
             .swap(false, Ordering::SeqCst)
     }
 
-    pub fn setter(&self) -> ParamSetter {
+    /// Returns a `ParamSetter` which can be used to set parameter values.
+    pub fn get_setter(&self) -> ParamSetter {
         ParamSetter::new(&*self.window_handler.context)
     }
 
-    pub fn webview(&self) -> &WebView {
+    /// Returns a reference to the `WebView` used by the editor.
+    pub fn get_webview(&self) -> &WebView {
         &self.window_handler.webview
     }
 }
@@ -294,13 +293,13 @@ impl WindowHandler {
         }
     }
 
-    pub fn resize(&self, window: &mut baseview::Window, width: u32, height: u32) {
+    pub fn resize(&self, window: &mut baseview::Window, width: u32, height: u32) -> bool {
         let old = self.state.size.swap((width, height));
 
         if !self.context.request_resize() {
             // Resize failed.
             self.state.size.store(old);
-            return;
+            return false;
         }
 
         window.resize(Size {
@@ -313,6 +312,8 @@ impl WindowHandler {
             width,
             height,
         });
+
+        true
     }
 
     pub fn send_json<T: serde::Serialize>(&self, json: T) {
