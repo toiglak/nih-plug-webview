@@ -142,10 +142,7 @@ impl WindowHandler {
         // TODO: proper error handling
         if let Ok(json_str) = serde_json::to_string(&json) {
             self.webview
-                .evaluate_script(&format!(
-                    "window.plugin.__host.recvMessage(`{}`);",
-                    json_str
-                ))
+                .evaluate_script(&format!("window.plugin.__ipc.recvMessage(`{}`);", json_str))
                 .unwrap();
             return Ok(());
         } else {
