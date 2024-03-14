@@ -1,10 +1,3 @@
-use baseview::{Event, Size, WindowHandle, WindowOpenOptions, WindowScalePolicy};
-use nih_plug::{
-    params::persist::PersistentField,
-    prelude::{Editor, GuiContext, ParamSetter},
-};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::Value;
 use std::{
     marker::PhantomData,
     sync::{
@@ -12,20 +5,25 @@ use std::{
         Arc, Mutex,
     },
 };
-use wry::{WebContext, WebView, WebViewBuilder};
 
+use baseview::{
+    Event, EventStatus, Size, Window, WindowHandle, WindowOpenOptions, WindowScalePolicy,
+};
 use crossbeam::{
     atomic::AtomicCell,
     channel::{unbounded, Receiver},
 };
+use nih_plug::{
+    params::persist::PersistentField,
+    prelude::{Editor, GuiContext, ParamSetter},
+};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::Value;
+use wry::{WebView, WebViewBuilder};
 
-pub use wry::http;
-
-pub use baseview::{DropData, DropEffect, MouseEvent, Window};
-pub use keyboard_types::*;
-
-type WindowEvent = baseview::Event;
-type WindowEventStatus = baseview::EventStatus;
+pub use baseview;
+pub use keyboard_types;
+pub use wry;
 
 pub enum HTMLSource {
     String(String),
@@ -41,49 +39,9 @@ pub trait EditorHandler: Sized + Send + Sync + 'static {
     fn init(&mut self, cx: &mut Context<Self>);
     fn on_frame(&mut self, cx: &mut Context<Self>);
     fn on_message(&mut self, cx: &mut Context<Self>, message: Self::ToPlugin);
-    fn on_window_event(&mut self, cx: &mut Context<Self>, event: WindowEvent) -> WindowEventStatus {
+    fn on_window_event(&mut self, cx: &mut Context<Self>, event: Event) -> EventStatus {
         let _ = (cx, event);
-        WindowEventStatus::Ignored
-    }
-}
-
-impl EditorHandler for () {
-    type ToPlugin = ();
-    type ToEditor = ();
-
-    fn init(&mut self, _cx: &mut Context<Self>) {}
-    fn on_frame(&mut self, _cx: &mut Context<Self>) {}
-    fn on_message(&mut self, _cx: &mut Context<Self>, _message: Self::ToPlugin) {}
-}
-
-trait EditorHandlerAny: Send + Sync {
-    fn init(&mut self, cx: &mut Context<()>);
-    fn on_frame(&mut self, cx: &mut Context<()>);
-    fn on_message(&mut self, cx: &mut Context<()>, message: Value);
-    fn on_window_event(&mut self, cx: &mut Context<()>, event: WindowEvent) -> WindowEventStatus;
-}
-
-impl<H: EditorHandler> EditorHandlerAny for H {
-    fn init(&mut self, cx: &mut Context<()>) {
-        let cx = unsafe { std::mem::transmute(cx) };
-        EditorHandler::on_frame(self, cx)
-    }
-
-    fn on_frame(&mut self, cx: &mut Context<()>) {
-        let cx = unsafe { std::mem::transmute(cx) };
-        EditorHandler::on_frame(self, cx)
-    }
-
-    fn on_message(&mut self, cx: &mut Context<()>, message: Value) {
-        let message =
-            serde_json::from_value(message).expect("Could not parse event from webview into T.");
-        let cx = unsafe { std::mem::transmute(cx) };
-        EditorHandler::on_message(self, cx, message)
-    }
-
-    fn on_window_event(&mut self, cx: &mut Context<()>, event: WindowEvent) -> WindowEventStatus {
-        let cx = unsafe { std::mem::transmute(cx) };
-        EditorHandler::on_window_event(self, cx, event)
+        EventStatus::Ignored
     }
 }
 
@@ -123,6 +81,45 @@ impl<'a, 'b, H: EditorHandler> Context<'a, 'b, H> {
     /// Returns a reference to the `WebView` used by the editor.
     pub fn get_webview(&self) -> &WebView {
         &self.window_handler.webview
+    }
+}
+
+/// `nih_plug_webview`'s state that should be persisted between sessions (like window size).
+///
+/// Add it as a persistent parameter to your plugin's state.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WebViewState {
+    /// The window's size in logical pixels before applying `scale_factor`.
+    #[serde(with = "nih_plug::params::persist::serialize_atomic_cell")]
+    size: AtomicCell<(u32, u32)>,
+}
+
+impl WebViewState {
+    /// Initialize the GUI's state. The window size is in logical pixels, so
+    /// before it is multiplied by the DPI scaling factor.
+    pub fn from_size(width: u32, height: u32) -> Arc<WebViewState> {
+        Arc::new(WebViewState {
+            size: AtomicCell::new((width, height)),
+        })
+    }
+
+    /// Returns a `(width, height)` pair for the current size of the GUI in
+    /// logical pixels.
+    pub fn size(&self) -> (u32, u32) {
+        self.size.load()
+    }
+}
+
+impl<'a> PersistentField<'a, WebViewState> for Arc<WebViewState> {
+    fn set(&self, new_value: WebViewState) {
+        self.size.store(new_value.size.load());
+    }
+
+    fn map<F, R>(&self, f: F) -> R
+    where
+        F: Fn(&WebViewState) -> R,
+    {
+        f(self)
     }
 }
 
@@ -196,8 +193,6 @@ impl Editor for WebviewEditor {
         let window_handle = baseview::Window::open_parented(&parent, options, move |mut window| {
             let (events_sender, events_receiver) = unbounded();
 
-            let mut web_context = WebContext::new(Some(std::env::temp_dir()));
-
             let mut webview_builder = WebViewBuilder::new_as_child(window);
 
             // Apply user configuration.
@@ -213,9 +208,6 @@ impl Editor for WebviewEditor {
                     width: state.size().0 as u32,
                     height: state.size().1 as u32,
                 })
-                .with_accept_first_mouse(true)
-                // .with_devtools(developer_mode)
-                .with_web_context(&mut web_context)
                 .with_ipc_handler(move |msg: String| {
                     if let Ok(json_value) = serde_json::from_str(&msg) {
                         let _ = events_sender.send(json_value);
@@ -306,6 +298,7 @@ impl WindowHandler {
             width: width as f64,
             height: height as f64,
         });
+
         self.webview.set_bounds(wry::Rect {
             x: 0,
             y: 0,
@@ -349,7 +342,7 @@ impl baseview::WindowHandler for WindowHandler {
         handler.on_frame(&mut cx);
     }
 
-    fn on_event(&mut self, window: &mut baseview::Window, event: Event) -> WindowEventStatus {
+    fn on_event(&mut self, window: &mut baseview::Window, event: Event) -> EventStatus {
         // Focus the webview so that it can receive keyboard events.
         self.webview.focus();
 
@@ -361,39 +354,43 @@ impl baseview::WindowHandler for WindowHandler {
     }
 }
 
-/// State for an `nih_plug_egui` editor.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct WebViewState {
-    /// The window's size in logical pixels before applying `scale_factor`.
-    #[serde(with = "nih_plug::params::persist::serialize_atomic_cell")]
-    size: AtomicCell<(u32, u32)>,
+impl EditorHandler for () {
+    type ToPlugin = ();
+    type ToEditor = ();
+
+    fn init(&mut self, _cx: &mut Context<Self>) {}
+    fn on_frame(&mut self, _cx: &mut Context<Self>) {}
+    fn on_message(&mut self, _cx: &mut Context<Self>, _message: Self::ToPlugin) {}
 }
 
-impl<'a> PersistentField<'a, WebViewState> for Arc<WebViewState> {
-    fn set(&self, new_value: WebViewState) {
-        self.size.store(new_value.size.load());
-    }
-
-    fn map<F, R>(&self, f: F) -> R
-    where
-        F: Fn(&WebViewState) -> R,
-    {
-        f(self)
-    }
+trait EditorHandlerAny: Send + Sync {
+    fn init(&mut self, cx: &mut Context<()>);
+    fn on_frame(&mut self, cx: &mut Context<()>);
+    fn on_message(&mut self, cx: &mut Context<()>, message: Value);
+    fn on_window_event(&mut self, cx: &mut Context<()>, event: Event) -> EventStatus;
 }
 
-impl WebViewState {
-    /// Initialize the GUI's state. The window size is in logical pixels, so before it is multiplied
-    /// by the DPI scaling factor.
-    pub fn from_size(width: u32, height: u32) -> Arc<WebViewState> {
-        Arc::new(WebViewState {
-            size: AtomicCell::new((width, height)),
-        })
+impl<H: EditorHandler> EditorHandlerAny for H {
+    fn init(&mut self, cx: &mut Context<()>) {
+        let cx = unsafe { std::mem::transmute(cx) };
+        EditorHandler::on_frame(self, cx)
     }
 
-    /// Returns a `(width, height)` pair for the current size of the GUI in logical pixels.
-    pub fn size(&self) -> (u32, u32) {
-        self.size.load()
+    fn on_frame(&mut self, cx: &mut Context<()>) {
+        let cx = unsafe { std::mem::transmute(cx) };
+        EditorHandler::on_frame(self, cx)
+    }
+
+    fn on_message(&mut self, cx: &mut Context<()>, message: Value) {
+        let message =
+            serde_json::from_value(message).expect("Could not parse event from webview into T.");
+        let cx = unsafe { std::mem::transmute(cx) };
+        EditorHandler::on_message(self, cx, message)
+    }
+
+    fn on_window_event(&mut self, cx: &mut Context<()>, event: Event) -> EventStatus {
+        let cx = unsafe { std::mem::transmute(cx) };
+        EditorHandler::on_window_event(self, cx, event)
     }
 }
 
