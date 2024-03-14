@@ -9,10 +9,7 @@ use std::{
 use baseview::{
     Event, EventStatus, Size, Window, WindowHandle, WindowOpenOptions, WindowScalePolicy,
 };
-use crossbeam::{
-    atomic::AtomicCell,
-    channel::{unbounded, Receiver},
-};
+use crossbeam::{atomic::AtomicCell, channel::Receiver};
 use nih_plug::{
     params::persist::PersistentField,
     prelude::{Editor, GuiContext, ParamSetter},
@@ -97,7 +94,7 @@ pub struct WebViewState {
 impl WebViewState {
     /// Initialize the GUI's state. The window size is in logical pixels, so
     /// before it is multiplied by the DPI scaling factor.
-    pub fn from_size(width: u32, height: u32) -> Arc<WebViewState> {
+    pub fn new(width: u32, height: u32) -> Arc<WebViewState> {
         Arc::new(WebViewState {
             size: AtomicCell::new((width, height)),
         })
@@ -191,7 +188,7 @@ impl Editor for WebviewEditor {
         let fn_with_builder = self.fn_with_builder.lock().unwrap().take();
 
         let window_handle = baseview::Window::open_parented(&parent, options, move |mut window| {
-            let (events_sender, events_receiver) = unbounded();
+            let (events_sender, events_receiver) = crossbeam::channel::unbounded();
 
             let mut webview_builder = WebViewBuilder::new_as_child(window);
 
@@ -200,7 +197,7 @@ impl Editor for WebviewEditor {
                 webview_builder = (fn_with_builder)(webview_builder);
             }
 
-            // Set properties required by `EditorHandler` abstraction.
+            // Set properties required by `EditorHandler`.
             let webview_builder = webview_builder
                 .with_bounds(wry::Rect {
                     x: 0,
@@ -273,7 +270,7 @@ pub struct WindowHandler {
     webview: WebView,
     events_receiver: Receiver<Value>,
     state: Arc<WebViewState>,
-    pub params_changed: Arc<AtomicBool>,
+    params_changed: Arc<AtomicBool>,
 }
 
 impl WindowHandler {
