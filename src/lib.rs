@@ -21,8 +21,11 @@ use crossbeam::{
 
 pub use wry::http;
 
-pub use baseview::{DropData, DropEffect, EventStatus, MouseEvent, Window};
+pub use baseview::{DropData, DropEffect, MouseEvent, Window};
 pub use keyboard_types::*;
+
+type WindowEvent = baseview::Event;
+type WindowEventStatus = baseview::EventStatus;
 
 pub enum HTMLSource {
     String(String),
@@ -35,6 +38,10 @@ pub trait EditorHandler: Sized + Send + Sync + 'static {
 
     fn on_frame(&mut self, cx: &mut Context<Self>);
     fn on_message(&mut self, cx: &mut Context<Self>, message: Self::ToPluginMessage);
+    fn on_window_event(&mut self, cx: &mut Context<Self>, event: WindowEvent) -> WindowEventStatus {
+        let _ = (cx, event);
+        WindowEventStatus::Ignored
+    }
 }
 
 // TODO: Instead of this, just cast create ContextAny that has the same layout
@@ -58,6 +65,7 @@ trait EditorHandlerAny: Send + Sync {
     fn on_frame(&mut self, cx: &mut Context<()>);
     #[allow(unused)]
     fn on_message(&mut self, cx: &mut Context<()>, message: Box<dyn std::any::Any>);
+    fn on_window_event(&mut self, cx: &mut Context<()>, event: WindowEvent) -> WindowEventStatus;
 }
 
 impl<H: EditorHandler> EditorHandlerAny for H {
@@ -69,6 +77,11 @@ impl<H: EditorHandler> EditorHandlerAny for H {
     fn on_message(&mut self, cx: &mut Context<()>, message: Box<dyn std::any::Any>) {
         let cx = unsafe { std::mem::transmute(cx) };
         EditorHandler::on_message(self, cx, *message.downcast().unwrap())
+    }
+
+    fn on_window_event(&mut self, cx: &mut Context<()>, event: WindowEvent) -> WindowEventStatus {
+        let cx = unsafe { std::mem::transmute(cx) };
+        EditorHandler::on_window_event(self, cx, event)
     }
 }
 
@@ -307,7 +320,6 @@ impl WindowHandler {
 
 impl baseview::WindowHandler for WindowHandler {
     fn on_frame(&mut self, window: &mut baseview::Window) {
-        let _setter = ParamSetter::new(&*self.context);
         let mut handler = self.handler.lock().unwrap();
 
         let mut cx = Context {
@@ -318,40 +330,25 @@ impl baseview::WindowHandler for WindowHandler {
 
         handler.on_frame(&mut cx);
 
-        // if let Some(mut handler) = handler {
-        //     handler(self, setter, window);
-        //     *self.event_loop_handler.lock().unwrap() = Some(handler);
-        //     self.params_changed.store(false, Ordering::SeqCst);
-        // }
+        // Reset the flag.
+        self.params_changed.store(false, Ordering::SeqCst);
     }
 
-    fn on_event(&mut self, _window: &mut baseview::Window, _event: Event) -> EventStatus {
-        // Focus the webview on any event.
+    fn on_event(&mut self, window: &mut baseview::Window, event: Event) -> WindowEventStatus {
+        // Focus the webview so that it can receive keyboard events.
         self.webview.focus();
 
-        // match event {
-        //     Event::Keyboard(event) => {
-        //         if (self.keyboard_handler)(event) {
-        //             EventStatus::Captured
-        //         } else {
-        //             EventStatus::Ignored
-        //         }
-        //     }
-        //     Event::Mouse(event) => (self.mouse_handler)(event),
-        //     // TODO: Fix upstream, these aren't called at all on macos...
-        //     Event::Window(event) => match event {
-        //         baseview::WindowEvent::Resized(_) => EventStatus::Ignored,
-        //         baseview::WindowEvent::Focused => EventStatus::Ignored,
-        //         baseview::WindowEvent::Unfocused => EventStatus::Ignored,
-        //         baseview::WindowEvent::WillClose => {
-        //             self.webview.close_devtools();
-        //             EventStatus::Captured
-        //         }
-        //     },
-        // }
-        EventStatus::Ignored
+        let mut handler = self.handler.lock().unwrap();
+        let mut cx = Context {
+            window_handler: self,
+            window,
+            _p: PhantomData,
+        };
+
+        handler.on_window_event(&mut cx, event)
     }
 }
+
 /// State for an `nih_plug_egui` editor.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WebViewState {
