@@ -370,7 +370,7 @@ trait EditorHandlerAny: Send + Sync {
 impl<H: EditorHandler> EditorHandlerAny for H {
     fn init(&mut self, cx: &mut Context<()>) {
         let cx = unsafe { std::mem::transmute(cx) };
-        EditorHandler::on_frame(self, cx)
+        EditorHandler::init(self, cx)
     }
 
     fn on_frame(&mut self, cx: &mut Context<()>) {
