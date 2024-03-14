@@ -63,8 +63,7 @@ impl EditorHandler for () {
 
 trait EditorHandlerAny: Send + Sync {
     fn on_frame(&mut self, cx: &mut Context<()>);
-    #[allow(unused)]
-    fn on_message(&mut self, cx: &mut Context<()>, message: Box<dyn std::any::Any>);
+    fn on_message(&mut self, cx: &mut Context<()>, message: Value);
     fn on_window_event(&mut self, cx: &mut Context<()>, event: WindowEvent) -> WindowEventStatus;
 }
 
@@ -74,9 +73,11 @@ impl<H: EditorHandler> EditorHandlerAny for H {
         EditorHandler::on_frame(self, cx)
     }
 
-    fn on_message(&mut self, cx: &mut Context<()>, message: Box<dyn std::any::Any>) {
+    fn on_message(&mut self, cx: &mut Context<()>, message: Value) {
+        let message =
+            serde_json::from_value(message).expect("Could not parse event from webview into T.");
         let cx = unsafe { std::mem::transmute(cx) };
-        EditorHandler::on_message(self, cx, *message.downcast().unwrap())
+        EditorHandler::on_message(self, cx, message)
     }
 
     fn on_window_event(&mut self, cx: &mut Context<()>, event: WindowEvent) -> WindowEventStatus {
@@ -327,6 +328,11 @@ impl baseview::WindowHandler for WindowHandler {
             window,
             _p: PhantomData,
         };
+
+        // Call on_message for each message received from the webview.
+        while let Ok(event) = self.next_event() {
+            handler.on_message(&mut cx, event);
+        }
 
         handler.on_frame(&mut cx);
 
