@@ -38,6 +38,7 @@ pub trait EditorHandler: Sized + Send + Sync + 'static {
     /// Message type sent from the plugin to the editor.
     type ToEditor: Serialize;
 
+    fn init(&mut self, cx: &mut Context<Self>);
     fn on_frame(&mut self, cx: &mut Context<Self>);
     fn on_message(&mut self, cx: &mut Context<Self>, message: Self::ToPlugin);
     fn on_window_event(&mut self, cx: &mut Context<Self>, event: WindowEvent) -> WindowEventStatus {
@@ -46,30 +47,28 @@ pub trait EditorHandler: Sized + Send + Sync + 'static {
     }
 }
 
-// TODO: Instead of this, just cast create ContextAny that has the same layout
-// as Context<()> transmute it.
 impl EditorHandler for () {
     type ToPlugin = ();
     type ToEditor = ();
 
+    fn init(&mut self, _cx: &mut Context<Self>) {}
     fn on_frame(&mut self, _cx: &mut Context<Self>) {}
-
-    fn on_message(&mut self, _cx: &mut Context<Self>, message: Self::ToPlugin) {
-        match message {
-            _ => {
-                // Ignore
-            }
-        }
-    }
+    fn on_message(&mut self, _cx: &mut Context<Self>, _message: Self::ToPlugin) {}
 }
 
 trait EditorHandlerAny: Send + Sync {
+    fn init(&mut self, cx: &mut Context<()>);
     fn on_frame(&mut self, cx: &mut Context<()>);
     fn on_message(&mut self, cx: &mut Context<()>, message: Value);
     fn on_window_event(&mut self, cx: &mut Context<()>, event: WindowEvent) -> WindowEventStatus;
 }
 
 impl<H: EditorHandler> EditorHandlerAny for H {
+    fn init(&mut self, cx: &mut Context<()>) {
+        let cx = unsafe { std::mem::transmute(cx) };
+        EditorHandler::on_frame(self, cx)
+    }
+
     fn on_frame(&mut self, cx: &mut Context<()>) {
         let cx = unsafe { std::mem::transmute(cx) };
         EditorHandler::on_frame(self, cx)
@@ -97,7 +96,7 @@ pub struct Context<'a, 'b, H: EditorHandler> {
 
 impl<'a, 'b, H: EditorHandler> Context<'a, 'b, H> {
     pub fn send_message(&mut self, message: H::ToEditor) {
-        self.window_handler.send_json(message).unwrap();
+        self.window_handler.send_json(message);
     }
 
     pub fn next_message(&mut self) -> Option<H::ToPlugin> {
@@ -114,11 +113,17 @@ impl<'a, 'b, H: EditorHandler> Context<'a, 'b, H> {
     }
 
     pub fn params_changed(&mut self) -> bool {
-        self.window_handler.params_changed.load(Ordering::SeqCst)
+        self.window_handler
+            .params_changed
+            .swap(false, Ordering::SeqCst)
     }
 
     pub fn setter(&self) -> ParamSetter {
         ParamSetter::new(&*self.window_handler.context)
+    }
+
+    pub fn webview(&self) -> &WebView {
+        &self.window_handler.webview
     }
 }
 
@@ -189,7 +194,7 @@ impl Editor for WebviewEditor {
         let params_changed = self.params_changed.clone();
         let fn_with_builder = self.fn_with_builder.lock().unwrap().take();
 
-        let window_handle = baseview::Window::open_parented(&parent, options, move |window| {
+        let window_handle = baseview::Window::open_parented(&parent, options, move |mut window| {
             let (events_sender, events_receiver) = unbounded();
 
             let mut web_context = WebContext::new(Some(std::env::temp_dir()));
@@ -228,18 +233,20 @@ impl Editor for WebviewEditor {
             .build()
             .expect("Failed to construct webview. {}");
 
-            // Automatically open devtools in debug.
-            #[cfg(debug_assertions)]
-            webview.open_devtools();
-
-            WindowHandler {
-                handler,
+            let window_handler = WindowHandler {
+                handler: handler.clone(),
                 state,
                 context,
                 webview,
                 events_receiver,
                 params_changed: params_changed.clone(),
-            }
+            };
+
+            let mut handler = handler.lock().unwrap();
+            let mut cx = window_handler.context(&mut window);
+            handler.init(&mut cx);
+
+            window_handler
         });
 
         return Box::new(WrapSend {
@@ -279,6 +286,14 @@ pub struct WindowHandler {
 }
 
 impl WindowHandler {
+    fn context<'a, 'b>(&'a self, window: &'a mut Window<'b>) -> Context<'a, 'b, ()> {
+        Context {
+            window_handler: self,
+            window,
+            _p: PhantomData,
+        }
+    }
+
     pub fn resize(&self, window: &mut baseview::Window, width: u32, height: u32) {
         let old = self.state.size.swap((width, height));
 
@@ -300,15 +315,13 @@ impl WindowHandler {
         });
     }
 
-    pub fn send_json<T: serde::Serialize>(&self, json: T) -> Result<(), String> {
-        // TODO: proper error handling
+    pub fn send_json<T: serde::Serialize>(&self, json: T) {
         if let Ok(json_str) = serde_json::to_string(&json) {
             self.webview
                 .evaluate_script(&format!("window.plugin.__ipc.recvMessage(`{}`);", json_str))
                 .unwrap();
-            return Ok(());
         } else {
-            return Err("Can't convert JSON to string.".to_owned());
+            panic!("Can't convert JSON to string.");
         }
     }
 
@@ -323,13 +336,9 @@ impl WindowHandler {
 
 impl baseview::WindowHandler for WindowHandler {
     fn on_frame(&mut self, window: &mut baseview::Window) {
-        let mut handler = self.handler.lock().unwrap();
-
-        let mut cx = Context {
-            window_handler: self,
-            window,
-            _p: PhantomData,
-        };
+        let handler = self.handler.clone();
+        let mut handler = handler.lock().unwrap();
+        let mut cx = self.context(window);
 
         // Call on_message for each message received from the webview.
         while let Ok(event) = self.next_event() {
@@ -337,21 +346,15 @@ impl baseview::WindowHandler for WindowHandler {
         }
 
         handler.on_frame(&mut cx);
-
-        // Reset the flag.
-        self.params_changed.store(false, Ordering::SeqCst);
     }
 
     fn on_event(&mut self, window: &mut baseview::Window, event: Event) -> WindowEventStatus {
         // Focus the webview so that it can receive keyboard events.
         self.webview.focus();
 
-        let mut handler = self.handler.lock().unwrap();
-        let mut cx = Context {
-            window_handler: self,
-            window,
-            _p: PhantomData,
-        };
+        let handler = self.handler.clone();
+        let mut handler = handler.lock().unwrap();
+        let mut cx = self.context(window);
 
         handler.on_window_event(&mut cx, event)
     }
