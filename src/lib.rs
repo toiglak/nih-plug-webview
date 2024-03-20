@@ -237,9 +237,7 @@ impl Editor for WebviewEditor {
             window_handler
         });
 
-        return Box::new(WrapSend {
-            _window_handle: window_handle,
-        });
+        return Box::new(EditorHandle { window_handle });
     }
 
     fn size(&self) -> (u32, u32) {
@@ -261,6 +259,18 @@ impl Editor for WebviewEditor {
 
     fn param_modulation_changed(&self, _id: &str, _modulation_offset: f32) {
         self.params_changed.store(true, Ordering::SeqCst);
+    }
+}
+
+struct EditorHandle {
+    window_handle: WindowHandle,
+}
+
+unsafe impl Send for EditorHandle {}
+
+impl Drop for EditorHandle {
+    fn drop(&mut self) {
+        self.window_handle.close();
     }
 }
 
@@ -390,8 +400,3 @@ impl<H: EditorHandler> EditorHandlerAny for H {
         EditorHandler::on_window_event(self, cx, event)
     }
 }
-
-struct WrapSend {
-    _window_handle: WindowHandle,
-}
-unsafe impl Send for WrapSend {}
