@@ -28,14 +28,14 @@ pub enum HTMLSource {
 }
 
 pub trait EditorHandler: Sized + Send + Sync + 'static {
-    /// Message type sent from the editor to the plugin.
-    type ToPlugin: DeserializeOwned;
-    /// Message type sent from the plugin to the editor.
-    type ToEditor: Serialize;
+    /// Message type sent from the handler to the editor.
+    type EditorTx: Serialize;
+    /// Message type sent from the editor to the handler.
+    type EditorRx: DeserializeOwned;
 
     fn init(&mut self, cx: &mut Context<Self>);
     fn on_frame(&mut self, cx: &mut Context<Self>);
-    fn on_message(&mut self, cx: &mut Context<Self>, message: Self::ToPlugin);
+    fn on_message(&mut self, cx: &mut Context<Self>, message: Self::EditorRx);
     fn on_window_event(&mut self, cx: &mut Context<Self>, event: Event) -> EventStatus {
         let _ = (cx, event);
         EventStatus::Ignored
@@ -51,7 +51,7 @@ pub struct Context<'a, 'b, H: EditorHandler> {
 
 impl<'a, 'b, H: EditorHandler> Context<'a, 'b, H> {
     /// Send a message to the plugin.
-    pub fn send_message(&mut self, message: H::ToEditor) {
+    pub fn send_message(&mut self, message: H::EditorTx) {
         self.window_handler.send_json(message);
     }
 
@@ -362,12 +362,12 @@ impl baseview::WindowHandler for WindowHandler {
 }
 
 impl EditorHandler for () {
-    type ToPlugin = ();
-    type ToEditor = ();
+    type EditorRx = ();
+    type EditorTx = ();
 
     fn init(&mut self, _cx: &mut Context<Self>) {}
     fn on_frame(&mut self, _cx: &mut Context<Self>) {}
-    fn on_message(&mut self, _cx: &mut Context<Self>, _message: Self::ToPlugin) {}
+    fn on_message(&mut self, _cx: &mut Context<Self>, _message: Self::EditorRx) {}
 }
 
 trait EditorHandlerAny: Send + Sync {
