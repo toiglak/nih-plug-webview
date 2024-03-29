@@ -63,7 +63,7 @@ impl<'a, 'b, H: EditorHandler> Context<'a, 'b, H> {
         self.window_handler.resize(self.window, width, height)
     }
 
-    /// Returns `true` if plugin parameters changed since the last call to this method.
+    /// Returns `true` if plugin parameters have changed since the last call to this method.
     pub fn params_changed(&mut self) -> bool {
         self.window_handler
             .params_changed
