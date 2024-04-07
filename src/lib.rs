@@ -1,5 +1,6 @@
 use std::{
     marker::PhantomData,
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -16,15 +17,30 @@ use nih_plug::{
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
-use wry::{WebView, WebViewBuilder};
+use wry::{
+    http::{self, header::CONTENT_TYPE, Request, Response},
+    WebView, WebViewBuilder,
+};
 
 pub use baseview;
 pub use keyboard_types;
 pub use wry;
 
-pub enum HTMLSource {
-    String(String),
+#[derive(Debug, Clone)]
+pub enum WebviewSource {
+    /// Loads a web page from the given URL.
+    ///
+    /// For example `https://example.com`.
     URL(String),
+    /// Loads a web page from the given HTML content.
+    ///
+    /// For example `<h1>Hello, world!</h1>`.
+    HTML(String),
+    /// Serves a directory over custom protocol (`wry://`).
+    ///
+    /// Make sure that the directory includes an `index.html` file, as it is the
+    /// entry point for the webview.
+    Dir(PathBuf),
 }
 
 pub trait EditorHandler: Sized + Send + Sync + 'static {
@@ -123,7 +139,7 @@ impl<'a> PersistentField<'a, WebViewState> for Arc<WebViewState> {
 pub struct WebviewEditor {
     handler: Arc<Mutex<dyn EditorHandlerAny>>,
     state: Arc<WebViewState>,
-    source: Arc<HTMLSource>,
+    source: Arc<WebviewSource>,
     params_changed: Arc<AtomicBool>,
     fn_with_builder:
         Mutex<Option<Box<dyn FnOnce(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static>>>,
@@ -132,7 +148,7 @@ pub struct WebviewEditor {
 impl WebviewEditor {
     /// Creates a new `WebviewEditor`.
     pub fn new(
-        source: HTMLSource,
+        source: WebviewSource,
         webview_state: Arc<WebViewState>,
         handler: impl EditorHandler,
     ) -> WebviewEditor {
@@ -151,7 +167,7 @@ impl WebviewEditor {
     /// which options are overridden, see the `Editor::spawn` implementation
     /// for the `WebviewEditor`.
     pub fn new_with_webview(
-        source: HTMLSource,
+        source: WebviewSource,
         webview_state: Arc<WebViewState>,
         handler: impl EditorHandler,
         f: impl FnOnce(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static,
@@ -178,7 +194,7 @@ impl Editor for WebviewEditor {
                 width: self.state.size().0 as f64,
                 height: self.state.size().1 as f64,
             },
-            title: "Plug-in".to_owned(),
+            title: "Plugin".to_owned(),
         };
 
         let handler = self.handler.clone();
@@ -213,9 +229,23 @@ impl Editor for WebviewEditor {
                     }
                 });
 
-            let webview = match source.as_ref() {
-                HTMLSource::String(html) => webview_builder.with_html(html),
-                HTMLSource::URL(url) => webview_builder.with_url(url.as_str()),
+            let webview = match (*source).clone() {
+                WebviewSource::URL(url) => webview_builder.with_url(url.as_str()),
+                WebviewSource::HTML(html) => webview_builder.with_html(html),
+                WebviewSource::Dir(root) => webview_builder
+                    .with_custom_protocol(
+                        "wry".to_string(), //
+                        move |request| match get_wry_response(&root, request) {
+                            Ok(r) => r.map(Into::into),
+                            Err(e) => http::Response::builder()
+                                .header(CONTENT_TYPE, "text/plain")
+                                .status(500)
+                                .body(e.to_string().as_bytes().to_vec())
+                                .unwrap()
+                                .map(Into::into),
+                        },
+                    )
+                    .with_url("wry://localhost"),
             }
             .unwrap()
             .build()
@@ -399,4 +429,30 @@ impl<H: EditorHandler> EditorHandlerAny for H {
         let cx = unsafe { std::mem::transmute(cx) };
         EditorHandler::on_window_event(self, cx, event)
     }
+}
+
+/// TODO: Use async.
+fn get_wry_response(
+    root: &PathBuf,
+    request: Request<Vec<u8>>,
+) -> Result<http::Response<Vec<u8>>, Box<dyn std::error::Error>> {
+    let path = request.uri().path();
+    let path = if path == "/" {
+        "index.html"
+    } else {
+        //  removing leading slash
+        &path[1..]
+    };
+    let path = std::fs::canonicalize(root.join(path))?;
+    let content = std::fs::read(&path)?;
+
+    let mimetype = mime_guess::from_path(&path)
+        .first()
+        .map(|mime| mime.to_string())
+        .unwrap_or("".to_string());
+
+    Response::builder()
+        .header(CONTENT_TYPE, mimetype)
+        .body(content)
+        .map_err(Into::into)
 }
