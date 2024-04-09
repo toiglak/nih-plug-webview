@@ -40,7 +40,24 @@ pub enum WebviewSource {
     ///
     /// Make sure that the directory includes an `index.html` file, as it is the
     /// entry point for the webview.
-    Dir(PathBuf),
+    DirPath(PathBuf),
+    /// Serves assets over a custom protocol.
+    ///
+    /// This variant allows you to serve assets from memory or any other custom
+    /// source. To use this variant, you need to pair it with either
+    /// [`WebViewBuilder::with_custom_protocol`] or
+    /// [`WebViewBuilder::with_asynchronous_custom_protocol`].
+    ///
+    /// ## Example
+    ///
+    /// ```rust
+    /// WebviewEditor::new_with_webview(source, params, handler, |webview| {
+    ///     webview.with_custom_protocol("wry".to_string(), |request| {
+    ///         // Handle the request here.
+    ///         Ok(http::Response::builder())
+    ///     })
+    /// });
+    CustomProtocol(String),
 }
 
 pub trait EditorHandler: Sized + Send + Sync + 'static {
@@ -232,7 +249,7 @@ impl Editor for WebviewEditor {
             let webview = match (*source).clone() {
                 WebviewSource::URL(url) => webview_builder.with_url(url.as_str()),
                 WebviewSource::HTML(html) => webview_builder.with_html(html),
-                WebviewSource::Dir(root) => webview_builder
+                WebviewSource::DirPath(root) => webview_builder
                     .with_custom_protocol(
                         "wry".to_string(), //
                         move |request| match get_wry_response(&root, request) {
@@ -246,6 +263,9 @@ impl Editor for WebviewEditor {
                         },
                     )
                     .with_url("wry://localhost"),
+                WebviewSource::CustomProtocol(protocol) => {
+                    webview_builder.with_url(format!("{protocol}://localhost").as_str())
+                }
             }
             .unwrap()
             .build()
