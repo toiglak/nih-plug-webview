@@ -159,7 +159,7 @@ pub struct WebviewEditor {
     source: Arc<WebviewSource>,
     params_changed: Arc<AtomicBool>,
     fn_with_builder:
-        Mutex<Option<Box<dyn FnOnce(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static>>>,
+        Arc<Mutex<Option<Box<dyn Fn(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static>>>>,
 }
 
 impl WebviewEditor {
@@ -174,7 +174,7 @@ impl WebviewEditor {
             state: webview_state,
             source: Arc::new(source),
             params_changed: Arc::new(AtomicBool::new(false)),
-            fn_with_builder: Mutex::new(None),
+            fn_with_builder: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -187,14 +187,14 @@ impl WebviewEditor {
         source: WebviewSource,
         webview_state: Arc<WebViewState>,
         handler: impl EditorHandler,
-        f: impl FnOnce(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static,
+        f: impl Fn(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static,
     ) -> WebviewEditor {
         WebviewEditor {
             handler: Arc::new(Mutex::new(handler)),
             state: webview_state,
             source: Arc::new(source),
             params_changed: Arc::new(AtomicBool::new(false)),
-            fn_with_builder: Mutex::new(Some(Box::new(f))),
+            fn_with_builder: Arc::new(Mutex::new(Some(Box::new(f)))),
         }
     }
 }
@@ -218,7 +218,7 @@ impl Editor for WebviewEditor {
         let state = self.state.clone();
         let source = self.source.clone();
         let params_changed = self.params_changed.clone();
-        let fn_with_builder = self.fn_with_builder.lock().unwrap().take();
+        let fn_with_builder = self.fn_with_builder.clone();
 
         let window_handle = baseview::Window::open_parented(&parent, options, move |mut window| {
             let (events_sender, events_receiver) = crossbeam::channel::unbounded();
@@ -226,7 +226,7 @@ impl Editor for WebviewEditor {
             let mut webview_builder = WebViewBuilder::new_as_child(window);
 
             // Apply user configuration.
-            if let Some(fn_with_builder) = fn_with_builder {
+            if let Some(fn_with_builder) = &*fn_with_builder.lock().unwrap() {
                 webview_builder = (fn_with_builder)(webview_builder);
             }
 
