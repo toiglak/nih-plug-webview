@@ -17,7 +17,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use wry::{
     http::{self, header::CONTENT_TYPE, Request, Response},
-    WebView, WebViewBuilder,
+    WebContext, WebView, WebViewBuilder,
 };
 
 pub use baseview;
@@ -154,8 +154,8 @@ struct Config {
     state: Arc<WebviewState>,
     source: WebviewSource,
     handler: Box<Mutex<dyn EditorHandlerAny>>,
-    with_webview_fn:
-        Mutex<Option<Box<dyn Fn(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static>>>,
+    context_dir: PathBuf,
+    with_webview_fn: Mutex<Box<dyn Fn(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static>>,
 }
 
 /// A webview-based editor.
@@ -171,6 +171,7 @@ impl WebviewEditor {
         source: WebviewSource,
         state: Arc<WebviewState>,
         handler: impl EditorHandler,
+        context_dir: PathBuf,
     ) -> WebviewEditor {
         WebviewEditor {
             config: Arc::new(Config {
@@ -178,7 +179,8 @@ impl WebviewEditor {
                 state,
                 source,
                 handler: Box::new(Mutex::new(handler)),
-                with_webview_fn: Mutex::new(None),
+                context_dir,
+                with_webview_fn: Mutex::new(Box::new(|w| w)),
             }),
             params_changed: Arc::new(AtomicBool::new(false)),
         }
@@ -194,6 +196,7 @@ impl WebviewEditor {
         source: WebviewSource,
         state: Arc<WebviewState>,
         handler: impl EditorHandler,
+        context_dir: PathBuf,
         f: impl Fn(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static,
     ) -> WebviewEditor {
         WebviewEditor {
@@ -202,7 +205,8 @@ impl WebviewEditor {
                 state,
                 source,
                 handler: Box::new(Mutex::new(handler)),
-                with_webview_fn: Mutex::new(Some(Box::new(f))),
+                context_dir,
+                with_webview_fn: Mutex::new(Box::new(f)),
             }),
             params_changed: Arc::new(AtomicBool::new(false)),
         }
@@ -235,6 +239,7 @@ impl Editor for WebviewEditor {
                 state,
                 source,
                 handler,
+                context_dir,
                 with_webview_fn,
             } = &*config;
 
@@ -243,14 +248,14 @@ impl Editor for WebviewEditor {
             let mut webview_builder = WebViewBuilder::new_as_child(window);
 
             // Apply user configuration.
-            if let Some(with_webview_fn) = &*with_webview_fn.lock().unwrap() {
-                webview_builder = (with_webview_fn)(webview_builder);
-            }
+            webview_builder = with_webview_fn.lock().unwrap()(webview_builder);
 
             //
             // Configure the webview.
 
             let (width, height) = state.size.load();
+
+            let mut web_context = WebContext::new(Some(context_dir.clone()));
 
             let webview_builder = webview_builder
                 .with_bounds(wry::Rect {
@@ -265,7 +270,8 @@ impl Editor for WebviewEditor {
                     } else {
                         panic!("Invalid JSON from webview: {}.", msg);
                     }
-                });
+                })
+                .with_web_context(&mut web_context);
 
             let webview = match (*source).clone() {
                 WebviewSource::URL(url) => webview_builder.with_url(url.as_str()),
