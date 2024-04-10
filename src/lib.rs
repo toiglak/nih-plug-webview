@@ -227,6 +227,7 @@ impl Editor for WebviewEditor {
         };
 
         let config = self.config.clone();
+        let params_changed = self.params_changed.clone();
 
         let window_handle = baseview::Window::open_parented(&parent, options, move |mut window| {
             let Config {
@@ -296,7 +297,7 @@ impl Editor for WebviewEditor {
                 context,
                 webview,
                 webview_rx,
-                params_changed: Arc::new(AtomicBool::new(false)),
+                params_changed,
             };
 
             let mut handler = handler.lock().unwrap();
