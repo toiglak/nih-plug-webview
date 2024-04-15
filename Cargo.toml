@@ -8,12 +8,12 @@ license = "ISC"
 description = "An adapter to use webview GUIs with NIH-plug"
 
 [dependencies]
-nih_plug = { workspace = true }
-wry = { workspace = true }
-parking_lot = { workspace = true }
-serde_json = { workspace = true }
-serde = { workspace = true }
 baseview = { workspace = true }
 crossbeam = { workspace = true }
 keyboard-types = { workspace = true }
 mime_guess = { workspace = true }
+nih_plug = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+wry = { workspace = true }
