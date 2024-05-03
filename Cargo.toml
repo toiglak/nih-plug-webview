@@ -1,22 +1,21 @@
 [package]
 name = "nih_plug_webview"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 authors = [
     "Jakub Idzik <iglak.me@gmail.com>",
     "Max Huttunen <max.huttunen@gmail.com>",
 ]
 license = "ISC"
-
 description = "An adapter to build webview GUIs with NIH-plug"
 
 [dependencies]
-baseview = { workspace = true }
-crossbeam = { workspace = true }
-keyboard-types = { workspace = true }
-mime_guess = { workspace = true }
-nih_plug = { workspace = true }
-parking_lot = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-wry = { workspace = true }
+baseview = { git = "https://github.com/RustAudio/baseview" }
+crossbeam = "0.8.2"
+keyboard-types = "0.6.2"
+mime_guess = "2.0.4"
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", default-features = false }
+parking_lot = "0.12.1"
+serde = "1.0.197"
+serde_json = "1.0.115"
+wry = { git = "https://github.com/tauri-apps/wry", tag = "wry-v0.35.2" }
