@@ -2,10 +2,13 @@
 name = "nih_plug_webview"
 version = "0.0.0"
 edition = "2021"
-authors = ["Max Huttunen <max.huttunen@gmail.com>"]
+authors = [
+    "Jakub Idzik <iglak.me@gmail.com>",
+    "Max Huttunen <max.huttunen@gmail.com>",
+]
 license = "ISC"
 
-description = "An adapter to use webview GUIs with NIH-plug"
+description = "An adapter to build webview GUIs with NIH-plug"
 
 [dependencies]
 baseview = { workspace = true }
