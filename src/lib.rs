@@ -124,9 +124,7 @@ impl WebviewState {
     /// Initialize the GUI's state. The window size is in logical pixels, so
     /// before it is multiplied by the DPI scaling factor.
     pub fn new(width: u32, height: u32) -> Arc<WebviewState> {
-        Arc::new(WebviewState {
-            size: AtomicCell::new((width, height)),
-        })
+        Arc::new(WebviewState { size: AtomicCell::new((width, height)) })
     }
 
     /// Returns a `(width, height)` pair for the current size of the GUI in
@@ -223,10 +221,7 @@ impl Editor for WebviewEditor {
 
         let options = WindowOpenOptions {
             scale: WindowScalePolicy::SystemScaleFactor,
-            size: Size {
-                width: width as f64,
-                height: height as f64,
-            },
+            size: Size { width: width as f64, height: height as f64 },
             title: self.config.title.clone(),
         };
 
@@ -234,14 +229,8 @@ impl Editor for WebviewEditor {
         let params_changed = self.params_changed.clone();
 
         let window_handle = baseview::Window::open_parented(&parent, options, move |mut window| {
-            let Config {
-                title: _,
-                state,
-                source,
-                handler,
-                context_dir,
-                with_webview_fn,
-            } = &*config;
+            let Config { title: _, state, source, handler, context_dir, with_webview_fn } =
+                &*config;
 
             let (webview_to_editor_tx, webview_rx) = crossbeam::channel::unbounded();
 
@@ -258,12 +247,7 @@ impl Editor for WebviewEditor {
             let mut web_context = WebContext::new(Some(context_dir.clone()));
 
             let webview_builder = webview_builder
-                .with_bounds(wry::Rect {
-                    x: 0,
-                    y: 0,
-                    width,
-                    height,
-                })
+                .with_bounds(wry::Rect { x: 0, y: 0, width, height })
                 .with_ipc_handler(move |msg: String| {
                     if let Ok(json_value) = serde_json::from_str(&msg) {
                         let _ = webview_to_editor_tx.send(json_value);
@@ -363,11 +347,7 @@ struct WindowHandler {
 
 impl WindowHandler {
     fn context<'a, 'b>(&'a self, window: &'a mut Window<'b>) -> Context<'a, 'b, ()> {
-        Context {
-            handler: self,
-            window,
-            _p: PhantomData,
-        }
+        Context { handler: self, window, _p: PhantomData }
     }
 
     pub fn resize(&self, window: &mut baseview::Window, width: u32, height: u32) -> bool {
@@ -379,17 +359,9 @@ impl WindowHandler {
             return false;
         }
 
-        window.resize(Size {
-            width: width as f64,
-            height: height as f64,
-        });
+        window.resize(Size { width: width as f64, height: height as f64 });
 
-        self.webview.set_bounds(wry::Rect {
-            x: 0,
-            y: 0,
-            width,
-            height,
-        });
+        self.webview.set_bounds(wry::Rect { x: 0, y: 0, width, height });
 
         true
     }
@@ -492,13 +464,8 @@ fn get_wry_response(
     let path = std::fs::canonicalize(root.join(path))?;
     let content = std::fs::read(&path)?;
 
-    let mimetype = mime_guess::from_path(&path)
-        .first()
-        .map(|mime| mime.to_string())
-        .unwrap_or("".to_string());
+    let mimetype =
+        mime_guess::from_path(&path).first().map(|mime| mime.to_string()).unwrap_or("".to_string());
 
-    Response::builder()
-        .header(CONTENT_TYPE, mimetype)
-        .body(content)
-        .map_err(Into::into)
+    Response::builder().header(CONTENT_TYPE, mimetype).body(content).map_err(Into::into)
 }
