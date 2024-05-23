@@ -223,6 +223,7 @@ impl Editor for WebviewEditor {
             scale: WindowScalePolicy::SystemScaleFactor,
             size: Size { width: width as f64, height: height as f64 },
             title: self.config.title.clone(),
+            gl_config: None,
         };
 
         let config = self.config.clone();

@@ -10,11 +10,11 @@ license = "ISC"
 description = "An adapter to build webview GUIs with NIH-plug"
 
 [dependencies]
-baseview = { git = "https://github.com/RustAudio/baseview" }
+baseview = { git = "https://github.com/RustAudio/baseview.git", rev = "2c1b1a7b0fef1a29a5150a6a8f6fef6a0cbab8c4" }
 crossbeam = "0.8.2"
 keyboard-types = "0.6.2"
 mime_guess = "2.0.4"
-nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", default-features = false }
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "bb274976ca138289436b0bfa209b2c8c13244225", default-features = false }
 parking_lot = "0.12.1"
 serde = "1.0.197"
 serde_json = "1.0.115"
