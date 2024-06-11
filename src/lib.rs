@@ -41,6 +41,8 @@ pub enum WebviewSource {
     DirPath(PathBuf),
     /// Serves assets over a custom protocol.
     ///
+    /// - `url_path` is the path at which a browser will attempt to load the initial page
+    ///
     /// This variant allows you to serve assets from memory or any other custom
     /// source. To use this variant, you need to pair it with either
     /// [`WebViewBuilder::with_custom_protocol`] or
@@ -55,7 +57,7 @@ pub enum WebviewSource {
     ///         Ok(http::Response::builder())
     ///     })
     /// });
-    CustomProtocol(String),
+    CustomProtocol { protocol: String, url_path: String },
 }
 
 pub trait EditorHandler: Sized + Send + Sync + 'static {
@@ -275,8 +277,8 @@ impl Editor for WebviewEditor {
                         },
                     )
                     .with_url("wry://localhost"),
-                WebviewSource::CustomProtocol(protocol) => {
-                    webview_builder.with_url(format!("{protocol}://localhost").as_str())
+                WebviewSource::CustomProtocol { url_path: url, protocol } => {
+                    webview_builder.with_url(format!("{protocol}://localhost/{url}").as_str())
                 }
             }
             .unwrap()
