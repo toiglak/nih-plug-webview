@@ -62,13 +62,13 @@ pub enum WebviewSource {
 
 pub trait EditorHandler: Sized + Send + Sync + 'static {
     /// Message type sent from the handler to the editor.
-    type EditorTx: Serialize;
+    type EditorRx: Serialize;
     /// Message type sent from the editor to the handler.
-    type EditorRx: DeserializeOwned;
+    type HandlerRx: DeserializeOwned;
 
     fn init(&mut self, cx: &mut Context<Self>);
     fn on_frame(&mut self, cx: &mut Context<Self>);
-    fn on_message(&mut self, cx: &mut Context<Self>, message: Self::EditorRx);
+    fn on_message(&mut self, cx: &mut Context<Self>, message: Self::HandlerRx);
     fn on_window_event(&mut self, cx: &mut Context<Self>, event: Event) -> EventStatus {
         let _ = (cx, event);
         EventStatus::Ignored
@@ -84,7 +84,7 @@ pub struct Context<'a, 'b, H: EditorHandler> {
 
 impl<'a, 'b, H: EditorHandler> Context<'a, 'b, H> {
     /// Send a message to the plugin.
-    pub fn send_message(&mut self, message: H::EditorTx) {
+    pub fn send_message(&mut self, message: H::EditorRx) {
         self.handler.send_json(message);
     }
 
@@ -150,10 +150,10 @@ impl<'a> PersistentField<'a, WebviewState> for Arc<WebviewState> {
 }
 
 struct Config {
-    title: String,
-    state: Arc<WebviewState>,
-    source: WebviewSource,
     handler: Box<Mutex<dyn EditorHandlerAny>>,
+    state: Arc<WebviewState>,
+    title: String,
+    source: WebviewSource,
     context_dir: PathBuf,
     with_webview_fn: Mutex<Box<dyn Fn(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static>>,
 }
@@ -167,18 +167,18 @@ pub struct WebviewEditor {
 impl WebviewEditor {
     /// Creates a new `WebviewEditor`.
     pub fn new(
+        handler: impl EditorHandler,
+        state: Arc<WebviewState>,
         title: String,
         source: WebviewSource,
-        state: Arc<WebviewState>,
-        handler: impl EditorHandler,
         context_dir: PathBuf,
     ) -> WebviewEditor {
         WebviewEditor {
             config: Arc::new(Config {
-                title,
-                state,
-                source,
                 handler: Box::new(Mutex::new(handler)),
+                state,
+                title,
+                source,
                 context_dir,
                 with_webview_fn: Mutex::new(Box::new(|w| w)),
             }),
@@ -192,19 +192,19 @@ impl WebviewEditor {
     /// which options are overridden, see the `Editor::spawn` implementation
     /// for the `WebviewEditor`.
     pub fn new_with_webview(
+        handler: impl EditorHandler,
+        state: Arc<WebviewState>,
         title: String,
         source: WebviewSource,
-        state: Arc<WebviewState>,
-        handler: impl EditorHandler,
         context_dir: PathBuf,
         f: impl Fn(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static,
     ) -> WebviewEditor {
         WebviewEditor {
             config: Arc::new(Config {
-                title,
-                state,
-                source,
                 handler: Box::new(Mutex::new(handler)),
+                state,
+                title,
+                source,
                 context_dir,
                 with_webview_fn: Mutex::new(Box::new(f)),
             }),
@@ -251,6 +251,14 @@ impl Editor for WebviewEditor {
 
             let webview_builder = webview_builder
                 .with_bounds(wry::Rect { x: 0, y: 0, width, height })
+                .with_initialization_script(
+                    "window.host = {
+                        onmessage: function() {},
+                        postMessage: function(msg) {
+                            window.ipc.postMessage(JSON.stringify(msg));
+                        }
+                    };",
+                )
                 .with_ipc_handler(move |msg: String| {
                     if let Ok(json_value) = serde_json::from_str(&msg) {
                         let _ = webview_to_editor_tx.send(json_value);
@@ -372,7 +380,7 @@ impl WindowHandler {
     pub fn send_json<T: serde::Serialize>(&self, json: T) {
         if let Ok(json_str) = serde_json::to_string(&json) {
             self.webview
-                .evaluate_script(&format!("window.plugin.__ipc.recvMessage(`{}`);", json_str))
+                .evaluate_script(&format!("window.host.onmessage(`{}`);", json_str))
                 .unwrap();
         } else {
             panic!("Can't convert JSON to string.");
@@ -413,12 +421,12 @@ impl baseview::WindowHandler for WindowHandler {
 //
 
 impl EditorHandler for () {
+    type HandlerRx = ();
     type EditorRx = ();
-    type EditorTx = ();
 
     fn init(&mut self, _cx: &mut Context<Self>) {}
     fn on_frame(&mut self, _cx: &mut Context<Self>) {}
-    fn on_message(&mut self, _cx: &mut Context<Self>, _message: Self::EditorRx) {}
+    fn on_message(&mut self, _cx: &mut Context<Self>, _message: Self::HandlerRx) {}
 }
 
 trait EditorHandlerAny: Send + Sync {
@@ -440,8 +448,13 @@ impl<H: EditorHandler> EditorHandlerAny for H {
     }
 
     fn on_message(&mut self, cx: &mut Context<()>, message: Value) {
-        let message =
-            serde_json::from_value(message).expect("Could not parse event from webview into T.");
+        let parse_err = |e| {
+            format!(
+                "failed to deserialize message from webview: `{e}`. received `{}`",
+                message.to_string()
+            )
+        };
+        let message = serde_json::from_value(message.clone()).map_err(parse_err).unwrap();
         let cx = unsafe { std::mem::transmute(cx) };
         EditorHandler::on_message(self, cx, message)
     }
