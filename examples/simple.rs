@@ -14,7 +14,7 @@ impl SimpleEditor {
         let config = WebViewConfig {
             title: "Simple Plugin".to_string(),
             source: WebviewSource::HTML(include_str!("simple.html").to_string()),
-            workdir: PathBuf::from("./tmp"),
+            workdir: PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/target/webview-workdir")),
         };
 
         let editor = WebviewEditor::new(SimpleEditor {}, state, config);
@@ -51,7 +51,9 @@ pub struct SimplePlugin {
 impl Default for SimplePlugin {
     fn default() -> Self {
         Self {
-            params: Arc::new(SimpleParams { editor_state: Arc::new(WebviewState::new(350, 250)) }),
+            params: Arc::new(SimpleParams {
+                editor_state: Arc::new(WebviewState::new(350.0, 250.0)),
+            }),
         }
     }
 }

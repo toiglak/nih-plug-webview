@@ -13,16 +13,20 @@ use nih_plug::{
     params::persist::PersistentField,
     prelude::{Editor, GuiContext, ParamSetter},
 };
+use raw_window_handle::from_raw_window_handle_0_5_2;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use wry::{
+    dpi::{LogicalPosition, LogicalSize, Position},
     http::{self, header::CONTENT_TYPE, Request, Response},
-    WebContext, WebView, WebViewBuilder,
+    Rect, WebContext, WebView, WebViewBuilder,
 };
 
 pub use baseview;
 pub use keyboard_types;
 pub use wry;
+
+mod raw_window_handle;
 
 #[derive(Debug, Clone)]
 pub enum WebviewSource {
@@ -92,7 +96,7 @@ impl<'a, 'b, H: EditorHandler> Context<'a, 'b, H> {
     ///
     /// Do note that plugin host may refuse to resize the window, in which case
     /// this method will return `false`.
-    pub fn resize_window(&mut self, width: u32, height: u32) -> bool {
+    pub fn resize_window(&mut self, width: f64, height: f64) -> bool {
         self.handler.resize(self.window, width, height)
     }
 
@@ -119,19 +123,19 @@ impl<'a, 'b, H: EditorHandler> Context<'a, 'b, H> {
 pub struct WebviewState {
     /// The window's size in logical pixels before applying `scale_factor`.
     #[serde(with = "nih_plug::params::persist::serialize_atomic_cell")]
-    size: AtomicCell<(u32, u32)>,
+    size: AtomicCell<(f64, f64)>,
 }
 
 impl WebviewState {
     /// Initialize the GUI's state. The window size is in logical pixels, so
     /// before it is multiplied by the DPI scaling factor.
-    pub fn new(width: u32, height: u32) -> WebviewState {
+    pub fn new(width: f64, height: f64) -> WebviewState {
         WebviewState { size: AtomicCell::new((width, height)) }
     }
 
     /// Returns a `(width, height)` pair for the current size of the GUI in
     /// logical pixels.
-    pub fn size(&self) -> (u32, u32) {
+    pub fn size(&self) -> (f64, f64) {
         self.size.load()
     }
 }
@@ -228,9 +232,8 @@ impl Editor for WebviewEditor {
 
         let options = WindowOpenOptions {
             scale: WindowScalePolicy::SystemScaleFactor,
-            size: Size { width: width as f64, height: height as f64 },
+            size: baseview::Size { width, height },
             title: self.config.title.clone(),
-            gl_config: None,
         };
 
         let config = self.config.clone();
@@ -241,7 +244,9 @@ impl Editor for WebviewEditor {
 
             let (webview_to_editor_tx, webview_rx) = crossbeam::channel::unbounded();
 
-            let mut webview_builder = WebViewBuilder::new_as_child(window);
+            let new_window = from_raw_window_handle_0_5_2(window);
+
+            let mut webview_builder = WebViewBuilder::new_as_child(&new_window);
 
             // Apply user configuration.
             webview_builder = with_webview_fn.lock().unwrap()(webview_builder);
@@ -254,7 +259,10 @@ impl Editor for WebviewEditor {
             let mut web_context = WebContext::new(Some(workdir.clone()));
 
             let webview_builder = webview_builder
-                .with_bounds(wry::Rect { x: 0, y: 0, width, height })
+                .with_bounds(Rect {
+                    position: Position::Logical(LogicalPosition { x: 0.0, y: 0.0 }),
+                    size: wry::dpi::Size::Logical(LogicalSize { width, height }),
+                })
                 .with_initialization_script(
                     "window.host = {
                         onmessage: function() {},
@@ -263,16 +271,18 @@ impl Editor for WebviewEditor {
                         }
                     };",
                 )
-                .with_ipc_handler(move |msg: String| {
-                    if let Ok(json_value) = serde_json::from_str(&msg) {
+                .with_ipc_handler(move |request: Request<String>| {
+                    let message = request.body();
+
+                    if let Ok(json_value) = serde_json::from_str(&message) {
                         let _ = webview_to_editor_tx.send(json_value);
                     } else {
-                        panic!("Invalid JSON from webview: {}.", msg);
+                        panic!("Invalid JSON from webview: {}.", message);
                     }
                 })
                 .with_web_context(&mut web_context);
 
-            let webview = match (*source).clone() {
+            let webview_builder = match (*source).clone() {
                 WebviewSource::URL(url) => webview_builder.with_url(url.as_str()),
                 WebviewSource::HTML(html) => webview_builder.with_html(html),
                 WebviewSource::DirPath(root) => webview_builder
@@ -292,10 +302,9 @@ impl Editor for WebviewEditor {
                 WebviewSource::CustomProtocol { url_path: url, protocol } => {
                     webview_builder.with_url(format!("{protocol}://localhost/{url}").as_str())
                 }
-            }
-            .unwrap()
-            .build()
-            .expect("Failed to construct webview. {}");
+            };
+
+            let webview = webview_builder.build().expect("Failed to construct webview");
 
             let window_handler = WindowHandler {
                 init: config.clone(),
@@ -316,7 +325,8 @@ impl Editor for WebviewEditor {
     }
 
     fn size(&self) -> (u32, u32) {
-        self.config.state.size.load()
+        let (a, b) = self.config.state.size.load();
+        (a as u32, b as u32)
     }
 
     fn set_scale_factor(&self, _factor: f32) -> bool {
@@ -365,7 +375,7 @@ impl WindowHandler {
         Context { handler: self, window, _p: PhantomData }
     }
 
-    pub fn resize(&self, window: &mut baseview::Window, width: u32, height: u32) -> bool {
+    pub fn resize(&self, window: &mut baseview::Window, width: f64, height: f64) -> bool {
         let old = self.init.state.size.swap((width, height));
 
         if !self.context.request_resize() {
@@ -376,7 +386,11 @@ impl WindowHandler {
 
         window.resize(Size { width: width as f64, height: height as f64 });
 
-        self.webview.set_bounds(wry::Rect { x: 0, y: 0, width, height });
+        // FIXME: handle error?
+        let _ = self.webview.set_bounds(Rect {
+            position: Position::Logical(LogicalPosition { x: 0.0, y: 0.0 }),
+            size: wry::dpi::Size::Logical(LogicalSize { width, height }),
+        });
 
         true
     }
@@ -410,9 +424,6 @@ impl baseview::WindowHandler for WindowHandler {
     }
 
     fn on_event(&mut self, window: &mut baseview::Window, event: Event) -> EventStatus {
-        // Focus the webview so that it can receive keyboard events.
-        self.webview.focus();
-
         let mut handler = self.init.handler.lock().unwrap();
         let mut cx = self.context(window);
 
