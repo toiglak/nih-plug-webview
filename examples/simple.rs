@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use nih_plug::prelude::*;
-use nih_plug_webview::{EditorHandler, WebviewEditor, WebviewSource, WebviewState};
+use nih_plug_webview::{EditorHandler, WebViewConfig, WebviewEditor, WebviewSource, WebviewState};
 
 fn main() {
     nih_plug::nih_export_standalone::<SimplePlugin>();
@@ -11,16 +11,13 @@ struct SimpleEditor {}
 
 impl SimpleEditor {
     pub fn new(state: &Arc<WebviewState>) -> Option<Box<dyn Editor>> {
-        let source = WebviewSource::HTML(include_str!("simple.html").to_string());
+        let config = WebViewConfig {
+            title: "Simple Plugin".to_string(),
+            source: WebviewSource::HTML(include_str!("simple.html").to_string()),
+            workdir: PathBuf::from("./tmp"),
+        };
 
-        let editor = WebviewEditor::new_with_webview(
-            SimpleEditor {},
-            state.clone(),
-            "simple plugin".to_string(),
-            source,
-            PathBuf::from("./tmp"),
-            |w| w,
-        );
+        let editor = WebviewEditor::new(SimpleEditor {}, state, config);
 
         Some(Box::new(editor))
     }
@@ -53,7 +50,9 @@ pub struct SimplePlugin {
 
 impl Default for SimplePlugin {
     fn default() -> Self {
-        Self { params: Arc::new(SimpleParams { editor_state: WebviewState::new(350, 250) }) }
+        Self {
+            params: Arc::new(SimpleParams { editor_state: Arc::new(WebviewState::new(350, 250)) }),
+        }
     }
 }
 

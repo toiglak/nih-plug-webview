@@ -125,8 +125,8 @@ pub struct WebviewState {
 impl WebviewState {
     /// Initialize the GUI's state. The window size is in logical pixels, so
     /// before it is multiplied by the DPI scaling factor.
-    pub fn new(width: u32, height: u32) -> Arc<WebviewState> {
-        Arc::new(WebviewState { size: AtomicCell::new((width, height)) })
+    pub fn new(width: u32, height: u32) -> WebviewState {
+        WebviewState { size: AtomicCell::new((width, height)) }
     }
 
     /// Returns a `(width, height)` pair for the current size of the GUI in
@@ -149,63 +149,68 @@ impl<'a> PersistentField<'a, WebviewState> for Arc<WebviewState> {
     }
 }
 
-struct Config {
+struct Init {
     handler: Box<Mutex<dyn EditorHandlerAny>>,
     state: Arc<WebviewState>,
     title: String,
     source: WebviewSource,
-    webview_dir: PathBuf,
+    workdir: PathBuf,
     with_webview_fn: Mutex<Box<dyn Fn(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static>>,
+}
+
+pub struct WebViewConfig {
+    /// The title of the window when running as a standalone application.
+    pub title: String,
+    /// The source for the site to be loaded in the webview.
+    pub source: WebviewSource,
+    /// The directory where webview will store its working data.
+    pub workdir: PathBuf,
 }
 
 /// A webview-based editor.
 pub struct WebviewEditor {
-    config: Arc<Config>,
+    config: Arc<Init>,
     params_changed: Arc<AtomicBool>,
 }
 
 impl WebviewEditor {
-    /// Creates a new `WebviewEditor`.
     pub fn new(
-        handler: impl EditorHandler,
-        state: Arc<WebviewState>,
-        title: String,
-        source: WebviewSource,
-        webview_dir: PathBuf,
+        editor: impl EditorHandler,
+        state: &Arc<WebviewState>,
+        config: WebViewConfig,
     ) -> WebviewEditor {
         WebviewEditor {
-            config: Arc::new(Config {
-                handler: Box::new(Mutex::new(handler)),
-                state,
-                title,
-                source,
-                webview_dir,
+            config: Arc::new(Init {
+                handler: Box::new(Mutex::new(editor)),
+                state: state.clone(),
+                title: config.title,
+                source: config.source,
+                workdir: config.workdir,
                 with_webview_fn: Mutex::new(Box::new(|w| w)),
             }),
             params_changed: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// Creates a new `WebviewEditor` with custom webview configuration.
+    /// Creates a new `WebviewEditor` with the callback which allows you to configure many
+    /// of the [`WebViewBuilder`](wry::WebViewBuilder) settings.
     ///
-    /// The provided callback can customize [`wry::WebViewBuilder`] settings. Note that
-    /// some settings may be overridden by the library - see `WebviewEditor::spawn` for
-    /// details.
-    pub fn new_with_webview(
-        handler: impl EditorHandler,
-        state: Arc<WebviewState>,
-        title: String,
-        source: WebviewSource,
-        webview_dir: PathBuf,
+    /// **Note:** Some settings are overridden to ensure proper functionality of this
+    /// library. Refer to the `WebviewEditor::spawn` implementation for details on which
+    /// settings are affected.
+    pub fn new_with_webview_builder(
+        editor: impl EditorHandler,
+        state: &Arc<WebviewState>,
+        config: WebViewConfig,
         f: impl Fn(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static,
     ) -> WebviewEditor {
         WebviewEditor {
-            config: Arc::new(Config {
-                handler: Box::new(Mutex::new(handler)),
-                state,
-                title,
-                source,
-                webview_dir,
+            config: Arc::new(Init {
+                handler: Box::new(Mutex::new(editor)),
+                state: state.clone(),
+                title: config.title,
+                source: config.source,
+                workdir: config.workdir,
                 with_webview_fn: Mutex::new(Box::new(f)),
             }),
             params_changed: Arc::new(AtomicBool::new(false)),
@@ -232,14 +237,7 @@ impl Editor for WebviewEditor {
         let params_changed = self.params_changed.clone();
 
         let window_handle = baseview::Window::open_parented(&parent, options, move |mut window| {
-            let Config {
-                title: _,
-                state,
-                source,
-                handler,
-                webview_dir: context_dir,
-                with_webview_fn,
-            } = &*config;
+            let Init { title: _, state, source, handler, workdir, with_webview_fn } = &*config;
 
             let (webview_to_editor_tx, webview_rx) = crossbeam::channel::unbounded();
 
@@ -253,7 +251,7 @@ impl Editor for WebviewEditor {
 
             let (width, height) = state.size.load();
 
-            let mut web_context = WebContext::new(Some(context_dir.clone()));
+            let mut web_context = WebContext::new(Some(workdir.clone()));
 
             let webview_builder = webview_builder
                 .with_bounds(wry::Rect { x: 0, y: 0, width, height })
@@ -300,7 +298,7 @@ impl Editor for WebviewEditor {
             .expect("Failed to construct webview. {}");
 
             let window_handler = WindowHandler {
-                config: config.clone(),
+                init: config.clone(),
                 context,
                 webview,
                 webview_rx,
@@ -355,7 +353,7 @@ impl Drop for EditorHandle {
 
 /// This structure manages the editor window's event loop.
 struct WindowHandler {
-    config: Arc<Config>,
+    init: Arc<Init>,
     webview: WebView,
     context: Arc<dyn GuiContext>,
     params_changed: Arc<AtomicBool>,
@@ -368,11 +366,11 @@ impl WindowHandler {
     }
 
     pub fn resize(&self, window: &mut baseview::Window, width: u32, height: u32) -> bool {
-        let old = self.config.state.size.swap((width, height));
+        let old = self.init.state.size.swap((width, height));
 
         if !self.context.request_resize() {
             // Resize failed.
-            self.config.state.size.store(old);
+            self.init.state.size.store(old);
             return false;
         }
 
@@ -400,7 +398,7 @@ impl WindowHandler {
 
 impl baseview::WindowHandler for WindowHandler {
     fn on_frame(&mut self, window: &mut baseview::Window) {
-        let mut handler = self.config.handler.lock().unwrap();
+        let mut handler = self.init.handler.lock().unwrap();
         let mut cx = self.context(window);
 
         // Call on_message for each message received from the webview.
@@ -415,7 +413,7 @@ impl baseview::WindowHandler for WindowHandler {
         // Focus the webview so that it can receive keyboard events.
         self.webview.focus();
 
-        let mut handler = self.config.handler.lock().unwrap();
+        let mut handler = self.init.handler.lock().unwrap();
         let mut cx = self.context(window);
 
         handler.on_window_event(&mut cx, event)
