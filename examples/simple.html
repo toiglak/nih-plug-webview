@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Document</title>
+  </head>
+  <body>
+    <h2>Simple Plugin example</h2>
+    <button>Send message to Rust</button>
+    <div id="response"></div>
+
+    <script>
+      const response = document.getElementById("response");
+      const button = document.querySelector("button");
+
+      button.addEventListener("click", () => {
+        // Send message to Rust
+        window.host.postMessage("Hello from JS!");
+
+        // Listen for response from Rust
+        window.host.onmessage = (message) => {
+          response.innerHTML = message;
+        };
+      });
+    </script>
+
+    <style>
+      #response {
+        margin-top: 1em;
+      }
+    </style>
+  </body>
+</html>

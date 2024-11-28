@@ -154,7 +154,7 @@ struct Config {
     state: Arc<WebviewState>,
     title: String,
     source: WebviewSource,
-    context_dir: PathBuf,
+    webview_dir: PathBuf,
     with_webview_fn: Mutex<Box<dyn Fn(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static>>,
 }
 
@@ -171,7 +171,7 @@ impl WebviewEditor {
         state: Arc<WebviewState>,
         title: String,
         source: WebviewSource,
-        context_dir: PathBuf,
+        webview_dir: PathBuf,
     ) -> WebviewEditor {
         WebviewEditor {
             config: Arc::new(Config {
@@ -179,24 +179,24 @@ impl WebviewEditor {
                 state,
                 title,
                 source,
-                context_dir,
+                webview_dir,
                 with_webview_fn: Mutex::new(Box::new(|w| w)),
             }),
             params_changed: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// Creates a new `WebviewEditor` with a callback which allows to configure
-    /// `WebViewBuilder`. Do note that some options will be overridden by the
-    /// `EditorHandler` abstraction in order for it to function properly. To see
-    /// which options are overridden, see the `Editor::spawn` implementation
-    /// for the `WebviewEditor`.
+    /// Creates a new `WebviewEditor` with custom webview configuration.
+    ///
+    /// The provided callback can customize [`wry::WebViewBuilder`] settings. Note that
+    /// some settings may be overridden by the library - see `WebviewEditor::spawn` for
+    /// details.
     pub fn new_with_webview(
         handler: impl EditorHandler,
         state: Arc<WebviewState>,
         title: String,
         source: WebviewSource,
-        context_dir: PathBuf,
+        webview_dir: PathBuf,
         f: impl Fn(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static,
     ) -> WebviewEditor {
         WebviewEditor {
@@ -205,7 +205,7 @@ impl WebviewEditor {
                 state,
                 title,
                 source,
-                context_dir,
+                webview_dir,
                 with_webview_fn: Mutex::new(Box::new(f)),
             }),
             params_changed: Arc::new(AtomicBool::new(false)),
@@ -232,8 +232,14 @@ impl Editor for WebviewEditor {
         let params_changed = self.params_changed.clone();
 
         let window_handle = baseview::Window::open_parented(&parent, options, move |mut window| {
-            let Config { title: _, state, source, handler, context_dir, with_webview_fn } =
-                &*config;
+            let Config {
+                title: _,
+                state,
+                source,
+                handler,
+                webview_dir: context_dir,
+                with_webview_fn,
+            } = &*config;
 
             let (webview_to_editor_tx, webview_rx) = crossbeam::channel::unbounded();
 

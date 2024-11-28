@@ -18,3 +18,8 @@ nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "bb27497
 serde = "1.0.197"
 serde_json = "1.0.115"
 wry = { git = "https://github.com/tauri-apps/wry", tag = "wry-v0.35.2" }
+
+[dev-dependencies]
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "bb274976ca138289436b0bfa209b2c8c13244225", features = [
+    "standalone",
+] }
