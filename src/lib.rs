@@ -64,7 +64,7 @@ pub enum WebviewSource {
     CustomProtocol { protocol: String, url_path: String },
 }
 
-pub trait EditorHandler: Sized + Send + Sync + 'static {
+pub trait EditorHandler: Sized + Send + 'static {
     /// Message type sent from the handler to the editor.
     type EditorRx: Serialize;
     /// Message type sent from the editor to the handler.
@@ -153,15 +153,6 @@ impl<'a> PersistentField<'a, WebviewState> for Arc<WebviewState> {
     }
 }
 
-struct Init {
-    handler: Box<Mutex<dyn EditorHandlerAny>>,
-    state: Arc<WebviewState>,
-    title: String,
-    source: WebviewSource,
-    workdir: PathBuf,
-    with_webview_fn: Mutex<Box<dyn Fn(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static>>,
-}
-
 pub struct WebViewConfig {
     /// The title of the window when running as a standalone application.
     pub title: String,
@@ -169,6 +160,15 @@ pub struct WebViewConfig {
     pub source: WebviewSource,
     /// The directory where webview will store its working data.
     pub workdir: PathBuf,
+}
+
+struct Init {
+    editor: Box<Mutex<dyn EditorHandlerAny>>,
+    state: Arc<WebviewState>,
+    title: String,
+    source: WebviewSource,
+    workdir: PathBuf,
+    with_webview_fn: Mutex<Box<dyn Fn(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static>>,
 }
 
 /// A webview-based editor.
@@ -185,7 +185,7 @@ impl WebviewEditor {
     ) -> WebviewEditor {
         WebviewEditor {
             config: Arc::new(Init {
-                handler: Box::new(Mutex::new(editor)),
+                editor: Box::new(Mutex::new(editor)),
                 state: state.clone(),
                 title: config.title,
                 source: config.source,
@@ -210,7 +210,7 @@ impl WebviewEditor {
     ) -> WebviewEditor {
         WebviewEditor {
             config: Arc::new(Init {
-                handler: Box::new(Mutex::new(editor)),
+                editor: Box::new(Mutex::new(editor)),
                 state: state.clone(),
                 title: config.title,
                 source: config.source,
@@ -240,7 +240,7 @@ impl Editor for WebviewEditor {
         let params_changed = self.params_changed.clone();
 
         let window_handle = baseview::Window::open_parented(&parent, options, move |mut window| {
-            let Init { title: _, state, source, handler, workdir, with_webview_fn } = &*config;
+            let Init { state, source, editor, workdir, with_webview_fn, .. } = &*config;
 
             let (webview_to_editor_tx, webview_rx) = crossbeam::channel::unbounded();
 
@@ -314,9 +314,9 @@ impl Editor for WebviewEditor {
                 params_changed,
             };
 
-            let mut handler = handler.lock().unwrap();
+            let mut editor = editor.lock().unwrap();
             let mut cx = window_handler.context(&mut window);
-            handler.init(&mut cx);
+            editor.init(&mut cx);
 
             window_handler
         });
@@ -412,22 +412,22 @@ impl WindowHandler {
 
 impl baseview::WindowHandler for WindowHandler {
     fn on_frame(&mut self, window: &mut baseview::Window) {
-        let mut handler = self.init.handler.lock().unwrap();
+        let mut editor = self.init.editor.lock().unwrap();
         let mut cx = self.context(window);
 
         // Call on_message for each message received from the webview.
         while let Ok(event) = self.next_message() {
-            handler.on_message(&mut cx, event);
+            editor.on_message(&mut cx, event);
         }
 
-        handler.on_frame(&mut cx);
+        editor.on_frame(&mut cx);
     }
 
     fn on_event(&mut self, window: &mut baseview::Window, event: Event) -> EventStatus {
-        let mut handler = self.init.handler.lock().unwrap();
+        let mut editor = self.init.editor.lock().unwrap();
         let mut cx = self.context(window);
 
-        handler.on_window_event(&mut cx, event)
+        editor.on_window_event(&mut cx, event)
     }
 }
 
@@ -444,7 +444,7 @@ impl EditorHandler for () {
     fn on_message(&mut self, _cx: &mut Context<Self>, _message: Self::HandlerRx) {}
 }
 
-trait EditorHandlerAny: Send + Sync {
+trait EditorHandlerAny: Send {
     fn init(&mut self, cx: &mut Context<()>);
     fn on_frame(&mut self, cx: &mut Context<()>);
     fn on_message(&mut self, cx: &mut Context<()>, message: Value);
