@@ -1,21 +1,21 @@
 use std::{
-    marker::PhantomData,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
+        mpsc::{self},
         Arc, Mutex,
     },
 };
 
+use base64::{prelude::BASE64_STANDARD as BASE64, Engine};
 use baseview::{Event, EventStatus, Size, Window, WindowOpenOptions, WindowScalePolicy};
-use crossbeam::{atomic::AtomicCell, channel::Receiver};
+use crossbeam::atomic::AtomicCell;
 use nih_plug::{
     params::persist::PersistentField,
     prelude::{Editor, GuiContext, ParamSetter},
 };
 use raw_window_handle::from_raw_window_handle_0_5_2;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
 use wry::{
     dpi::{LogicalPosition, LogicalSize, Position},
     http::{self, header::CONTENT_TYPE, Request, Response},
@@ -64,32 +64,31 @@ pub enum WebviewSource {
     CustomProtocol { protocol: String, url_path: String },
 }
 
-pub trait EditorHandler: Sized + Send + 'static {
-    /// Message type sent from the handler to the editor.
-    type EditorRx: Serialize;
-    /// Message type sent from the editor to the handler.
-    type HandlerRx: DeserializeOwned;
+#[derive(Debug, Clone)]
+pub enum RawMessage {
+    Text(String),
+    Binary(Vec<u8>),
+}
 
-    fn init(&mut self, cx: &mut Context<Self>);
-    fn on_frame(&mut self, cx: &mut Context<Self>);
-    fn on_message(&mut self, cx: &mut Context<Self>, message: Self::HandlerRx);
-    fn on_window_event(&mut self, cx: &mut Context<Self>, event: Event) -> EventStatus {
+pub trait EditorHandler: Send + 'static {
+    fn init(&mut self, cx: &mut Context);
+    fn on_frame(&mut self, cx: &mut Context);
+    fn on_message(&mut self, cx: &mut Context, message: RawMessage);
+    fn on_window_event(&mut self, cx: &mut Context, event: Event) -> EventStatus {
         let _ = (cx, event);
         EventStatus::Ignored
     }
 }
 
-#[repr(C)]
-pub struct Context<'a, 'b, H: EditorHandler> {
+pub struct Context<'a, 'b> {
     handler: &'a WindowHandler,
     window: &'a mut Window<'b>,
-    _p: PhantomData<H>,
 }
 
-impl<'a, 'b, H: EditorHandler> Context<'a, 'b, H> {
+impl<'a, 'b> Context<'a, 'b> {
     /// Send a message to the plugin.
-    pub fn send_message(&mut self, message: H::EditorRx) {
-        self.handler.send_json(message);
+    pub fn send_message(&mut self, message: RawMessage) {
+        self.handler.send_message(message);
     }
 
     /// Resize the window to the given size (in logical pixels).
@@ -163,7 +162,7 @@ pub struct WebViewConfig {
 }
 
 struct Init {
-    editor: Box<Mutex<dyn EditorHandlerAny>>,
+    editor: Box<Mutex<dyn EditorHandler>>,
     state: Arc<WebviewState>,
     title: String,
     source: WebviewSource,
@@ -242,7 +241,7 @@ impl Editor for WebviewEditor {
         let window_handle = baseview::Window::open_parented(&parent, options, move |mut window| {
             let Init { state, source, editor, workdir, with_webview_fn, .. } = &*config;
 
-            let (webview_to_editor_tx, webview_rx) = crossbeam::channel::unbounded();
+            let (webview_to_plugin_tx, plugin_to_webview_rx) = mpsc::channel();
 
             let new_window = from_raw_window_handle_0_5_2(window);
 
@@ -266,19 +265,29 @@ impl Editor for WebviewEditor {
                 .with_initialization_script(
                     "window.host = {
                         onmessage: function() {},
-                        postMessage: function(msg) {
-                            window.ipc.postMessage(JSON.stringify(msg));
+                        postMessage: function(message) {
+                            if (typeof message !== 'string') {
+                                throw new Error('Message must be a string');
+                            }
+                            window.ipc.postMessage(message);
                         }
-                    };",
+                    };
+                    
+                    window.__NIH_PLUG_WEBVIEW__ = {
+                        decodeBase64: function(base64) {
+                            var binaryString = atob(base64);
+                            var bytes = new Uint8Array(binaryString.length);
+                            for (var i = 0; i < binaryString.length; i++) {
+                                bytes[i] = binaryString.charCodeAt(i);
+                            }
+                            return bytes.buffer;
+                        }
+                    }",
                 )
                 .with_ipc_handler(move |request: Request<String>| {
-                    let message = request.body();
-
-                    if let Ok(json_value) = serde_json::from_str(&message) {
-                        let _ = webview_to_editor_tx.send(json_value);
-                    } else {
-                        panic!("Invalid JSON from webview: {}.", message);
-                    }
+                    // TODO (BACKLOG): Call EditorHandler::on_message here.
+                    let message = request.into_body();
+                    webview_to_plugin_tx.send(RawMessage::Text(message)).ok();
                 })
                 .with_web_context(&mut web_context);
 
@@ -310,7 +319,7 @@ impl Editor for WebviewEditor {
                 init: config.clone(),
                 context,
                 webview,
-                webview_rx,
+                webview_rx: plugin_to_webview_rx,
                 params_changed,
             };
 
@@ -367,12 +376,12 @@ struct WindowHandler {
     webview: WebView,
     context: Arc<dyn GuiContext>,
     params_changed: Arc<AtomicBool>,
-    webview_rx: Receiver<Value>,
+    webview_rx: mpsc::Receiver<RawMessage>,
 }
 
 impl WindowHandler {
-    fn context<'a, 'b>(&'a self, window: &'a mut Window<'b>) -> Context<'a, 'b, ()> {
-        Context { handler: self, window, _p: PhantomData }
+    fn context<'a, 'b>(&'a self, window: &'a mut Window<'b>) -> Context<'a, 'b> {
+        Context { handler: self, window }
     }
 
     pub fn resize(&self, window: &mut baseview::Window, width: f64, height: f64) -> bool {
@@ -395,17 +404,25 @@ impl WindowHandler {
         true
     }
 
-    pub fn send_json<T: serde::Serialize>(&self, json: T) {
-        if let Ok(json_str) = serde_json::to_string(&json) {
-            self.webview
-                .evaluate_script(&format!("window.host.onmessage(`{}`);", json_str))
-                .unwrap();
-        } else {
-            panic!("Can't convert JSON to string.");
+    pub fn send_message(&self, message: RawMessage) {
+        match message {
+            RawMessage::Text(text) => {
+                let text = text.replace("`", r#"\`"#);
+                let script = format!("window.host.onmessage(`text`,`{}`);", text);
+                self.webview.evaluate_script(&script).ok();
+            }
+            RawMessage::Binary(bytes) => {
+                let bytes = BASE64.encode(&bytes);
+                let script = format!(
+                    "let data = window.__NIH_PLUG_WEBVIEW__.decodeBase64(`{bytes}`);\
+                    window.host.onmessage(`binary`, data);"
+                );
+                self.webview.evaluate_script(&script).ok();
+            }
         }
     }
 
-    pub fn next_message(&self) -> Result<Value, crossbeam::channel::TryRecvError> {
+    pub fn next_message(&self) -> Result<RawMessage, mpsc::TryRecvError> {
         self.webview_rx.try_recv()
     }
 }
@@ -416,8 +433,8 @@ impl baseview::WindowHandler for WindowHandler {
         let mut cx = self.context(window);
 
         // Call on_message for each message received from the webview.
-        while let Ok(event) = self.next_message() {
-            editor.on_message(&mut cx, event);
+        while let Ok(message) = self.next_message() {
+            editor.on_message(&mut cx, message);
         }
 
         editor.on_frame(&mut cx);
@@ -431,56 +448,6 @@ impl baseview::WindowHandler for WindowHandler {
     }
 }
 
-//
-//
-//
-
-impl EditorHandler for () {
-    type HandlerRx = ();
-    type EditorRx = ();
-
-    fn init(&mut self, _cx: &mut Context<Self>) {}
-    fn on_frame(&mut self, _cx: &mut Context<Self>) {}
-    fn on_message(&mut self, _cx: &mut Context<Self>, _message: Self::HandlerRx) {}
-}
-
-trait EditorHandlerAny: Send {
-    fn init(&mut self, cx: &mut Context<()>);
-    fn on_frame(&mut self, cx: &mut Context<()>);
-    fn on_message(&mut self, cx: &mut Context<()>, message: Value);
-    fn on_window_event(&mut self, cx: &mut Context<()>, event: Event) -> EventStatus;
-}
-
-impl<H: EditorHandler> EditorHandlerAny for H {
-    fn init(&mut self, cx: &mut Context<()>) {
-        let cx = unsafe { std::mem::transmute(cx) };
-        EditorHandler::init(self, cx)
-    }
-
-    fn on_frame(&mut self, cx: &mut Context<()>) {
-        let cx = unsafe { std::mem::transmute(cx) };
-        EditorHandler::on_frame(self, cx)
-    }
-
-    fn on_message(&mut self, cx: &mut Context<()>, message: Value) {
-        let parse_err = |e| {
-            format!(
-                "failed to deserialize message from webview: `{e}`. received `{}`",
-                message.to_string()
-            )
-        };
-        let message = serde_json::from_value(message.clone()).map_err(parse_err).unwrap();
-        let cx = unsafe { std::mem::transmute(cx) };
-        EditorHandler::on_message(self, cx, message)
-    }
-
-    fn on_window_event(&mut self, cx: &mut Context<()>, event: Event) -> EventStatus {
-        let cx = unsafe { std::mem::transmute(cx) };
-        EditorHandler::on_window_event(self, cx, event)
-    }
-}
-
-/// TODO: Use async.
 fn get_wry_response(
     root: &PathBuf,
     request: Request<Vec<u8>>,

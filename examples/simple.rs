@@ -1,7 +1,9 @@
 use std::{path::PathBuf, sync::Arc};
 
 use nih_plug::prelude::*;
-use nih_plug_webview::{EditorHandler, WebViewConfig, WebviewEditor, WebviewSource, WebviewState};
+use nih_plug_webview::{
+    Context, EditorHandler, RawMessage, WebViewConfig, WebviewEditor, WebviewSource, WebviewState,
+};
 
 fn main() {
     nih_plug::nih_export_standalone::<SimplePlugin>();
@@ -24,16 +26,13 @@ impl SimpleEditor {
 }
 
 impl EditorHandler for SimpleEditor {
-    type EditorRx = String;
-    type HandlerRx = String;
+    fn init(&mut self, _: &mut Context) {}
 
-    fn init(&mut self, _: &mut nih_plug_webview::Context<Self>) {}
+    fn on_frame(&mut self, _: &mut Context) {}
 
-    fn on_frame(&mut self, _: &mut nih_plug_webview::Context<Self>) {}
-
-    fn on_message(&mut self, cx: &mut nih_plug_webview::Context<Self>, message: Self::HandlerRx) {
-        println!("Received message: {}", message);
-        cx.send_message("Hello from Rust!".to_string());
+    fn on_message(&mut self, cx: &mut Context, message: RawMessage) {
+        println!("Received message: {:?}", message);
+        cx.send_message(RawMessage::Text("Hello from Rust!".to_string()));
     }
 }
 

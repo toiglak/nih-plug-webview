@@ -19,7 +19,7 @@
         window.host.postMessage("Hello from JS!");
 
         // Listen for response from Rust
-        window.host.onmessage = (message) => {
+        window.host.onmessage = (type, message) => {
           response.innerHTML = message;
         };
       });

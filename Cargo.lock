@@ -1773,6 +1773,7 @@ dependencies = [
 name = "nih_plug_webview"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "baseview 0.1.0 (git+https://github.com/RustAudio/baseview.git?rev=cd4df61)",
  "crossbeam",
  "keyboard-types",
@@ -1781,7 +1782,6 @@ dependencies = [
  "raw-window-handle 0.5.2",
  "raw-window-handle 0.6.2",
  "serde",
- "serde_json",
  "wry",
 ]
 
