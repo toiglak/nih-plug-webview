@@ -384,7 +384,7 @@ impl WindowHandler {
         Context { handler: self, window }
     }
 
-    pub fn resize(&self, window: &mut baseview::Window, width: f64, height: f64) -> bool {
+    fn resize(&self, window: &mut baseview::Window, width: f64, height: f64) -> bool {
         let old = self.init.state.size.swap((width, height));
 
         if !self.context.request_resize() {
@@ -404,7 +404,7 @@ impl WindowHandler {
         true
     }
 
-    pub fn send_message(&self, message: RawMessage) {
+    fn send_message(&self, message: RawMessage) {
         match message {
             RawMessage::Text(text) => {
                 let text = text.replace("`", r#"\`"#);
@@ -422,7 +422,7 @@ impl WindowHandler {
         }
     }
 
-    pub fn next_message(&self) -> Result<RawMessage, mpsc::TryRecvError> {
+    fn next_message(&self) -> Result<RawMessage, mpsc::TryRecvError> {
         self.webview_rx.try_recv()
     }
 }
@@ -456,7 +456,7 @@ fn get_wry_response(
     let path = if path == "/" {
         "index.html"
     } else {
-        //  removing leading slash
+        // Remove leading slash.
         &path[1..]
     };
     let path = std::fs::canonicalize(root.join(path))?;
