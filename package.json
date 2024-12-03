@@ -1,0 +1,9 @@
+{
+  "name": "nih-plug-webview",
+  "version": "0.1.0",
+  "main": "src-ts/index.ts",
+  "private": true,
+  "dependencies": {},
+  "devDependencies": {},
+  "scripts": {}
+}

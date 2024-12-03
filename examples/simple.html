@@ -10,20 +10,7 @@
     <button>Send message to Rust</button>
     <div id="response"></div>
 
-    <script>
-      const response = document.getElementById("response");
-      const button = document.querySelector("button");
-
-      button.addEventListener("click", () => {
-        // Send message to Rust
-        window.host.postMessage("Hello from JS!");
-
-        // Listen for response from Rust
-        window.host.onmessage = (type, message) => {
-          response.innerHTML = message;
-        };
-      });
-    </script>
+    <script src="simple.ts"></script>
 
     <style>
       #response {

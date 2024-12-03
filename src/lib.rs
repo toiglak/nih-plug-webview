@@ -61,7 +61,12 @@ pub enum WebviewSource {
     ///         Ok(http::Response::builder())
     ///     })
     /// });
-    CustomProtocol { protocol: String, url_path: String },
+    CustomProtocol {
+        /// The protocol over which the site assets will be served.
+        protocol: String,
+        /// The path at which a browser will attempt to load the initial page.
+        url: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -201,7 +206,7 @@ impl WebviewEditor {
     /// **Note:** Some settings are overridden to ensure proper functionality of this
     /// library. Refer to the `WebviewEditor::spawn` implementation for details on which
     /// settings are affected.
-    pub fn new_with_webview_builder(
+    pub fn new_with_webview(
         editor: impl EditorHandler,
         state: &Arc<WebviewState>,
         config: WebViewConfig,
@@ -285,9 +290,15 @@ impl Editor for WebviewEditor {
                     }",
                 )
                 .with_ipc_handler(move |request: Request<String>| {
-                    // TODO (BACKLOG): Call EditorHandler::on_message here.
                     let message = request.into_body();
-                    webview_to_plugin_tx.send(RawMessage::Text(message)).ok();
+                    if message.starts_with("text,") {
+                        let message = message.trim_start_matches("text,");
+                        webview_to_plugin_tx.send(RawMessage::Text(message.to_string())).ok();
+                    } else if message.starts_with("binary,") {
+                        let message = message.trim_start_matches("binary,");
+                        let bytes = BASE64.decode(message.as_bytes()).unwrap();
+                        webview_to_plugin_tx.send(RawMessage::Binary(bytes)).ok();
+                    }
                 })
                 .with_web_context(&mut web_context);
 
@@ -308,7 +319,7 @@ impl Editor for WebviewEditor {
                         },
                     )
                     .with_url("wry://localhost"),
-                WebviewSource::CustomProtocol { url_path: url, protocol } => {
+                WebviewSource::CustomProtocol { url, protocol } => {
                     webview_builder.with_url(format!("{protocol}://localhost/{url}").as_str())
                 }
             };

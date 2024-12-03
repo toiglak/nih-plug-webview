@@ -27,3 +27,4 @@ wry = "0.45.0"
 nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "40269e1", features = [
     "standalone",
 ] }
+tempfile = "3.14.0"
