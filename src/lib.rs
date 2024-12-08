@@ -440,22 +440,43 @@ impl WindowHandler {
 
 impl baseview::WindowHandler for WindowHandler {
     fn on_frame(&mut self, window: &mut baseview::Window) {
-        let mut editor = self.init.editor.lock().unwrap();
-        let mut cx = self.context(window);
+        if let Err(err) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut editor = self.init.editor.lock().unwrap();
+            let mut cx = self.context(window);
 
-        // Call on_message for each message received from the webview.
-        while let Ok(message) = self.next_message() {
-            editor.on_message(&mut cx, message);
+            // Call on_message for each message received from the webview.
+            while let Ok(message) = self.next_message() {
+                editor.on_message(&mut cx, message);
+            }
+
+            editor.on_frame(&mut cx);
+        })) {
+            // NOTE: We catch panic here, because `baseview` doesn't run from the "main entry
+            // point", instead it schedules this handler as a task on the main thread. For
+            // some reason, on macos if you panic from a task the process will be forever
+            // stuck and you won't be able terminate it until you log out.
+            eprintln!("{:?}", err);
+            std::process::exit(1);
         }
-
-        editor.on_frame(&mut cx);
     }
 
     fn on_event(&mut self, window: &mut baseview::Window, event: Event) -> EventStatus {
-        let mut editor = self.init.editor.lock().unwrap();
-        let mut cx = self.context(window);
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut editor = self.init.editor.lock().unwrap();
+            let mut cx = self.context(window);
 
-        editor.on_window_event(&mut cx, event)
+            editor.on_window_event(&mut cx, event)
+        })) {
+            Ok(status) => status,
+            Err(err) => {
+                // NOTE: We catch panic here, because `baseview` doesn't run from the "main entry
+                // point", instead it schedules this handler as a task on the main thread. For
+                // some reason, on macos if you panic from a task the process will be forever
+                // stuck and you won't be able terminate it until you log out.
+                eprintln!("{:?}", err);
+                std::process::exit(1);
+            }
+        }
     }
 }
 
