@@ -1,22 +1,21 @@
 export type Message =
-  | { type: "binary"; data: ArrayBuffer }
+  | { type: "binary"; data: Uint8Array }
   | { type: "text"; data: string };
 
-const onCallbacks = [];
+// @ts-expect-error
+let postMessage = window.host.postMessage;
 
 // NOTE: We cannot use lowercase `ipc`, because `wry` reserved it in the global scope.
 export const IPC = {
-  on: (event: "message", callback: (message: Message) => void) => {
+  on: (event: "message", callback: (message: Readonly<Message>) => void) => {
     onCallbacks.push(callback);
   },
-  send: (message: string | ArrayBuffer) => {
-    if (message instanceof ArrayBuffer) {
-      // @ts-ignore
-      window.host.postMessage("binary," + arrayBufferToBase64(message));
+  send: (message: string | Uint8Array) => {
+    if (message instanceof Uint8Array) {
+      postMessage("binary," + arrayToBase64(message));
       return;
     } else if (typeof message === "string") {
-      // @ts-ignore
-      window.host.postMessage("text," + message);
+      postMessage("text," + message);
       return;
     } else {
       throw new Error(
@@ -26,12 +25,20 @@ export const IPC = {
   },
 };
 
-// @ts-ignore
+const onCallbacks: ((message: Readonly<Message>) => void)[] = [];
+
+// @ts-expect-error
 window.host.onmessage = (type, data) => {
-  onCallbacks.forEach((callback) => callback({ type, data }));
+  onCallbacks.forEach((callback) => {
+    const message = Object.freeze({
+      type,
+      data,
+    });
+    callback(message);
+  });
 };
 
-function arrayBufferToBase64(bytes) {
+function arrayToBase64(bytes: Uint8Array): string {
   var binary = "";
   var len = bytes.byteLength;
   for (var i = 0; i < len; i++) {
