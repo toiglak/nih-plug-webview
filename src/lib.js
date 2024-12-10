@@ -1,5 +1,8 @@
 window.__NIH_PLUG_WEBVIEW__ = {
-  onmessage: function () {},
+  messageBuffer: [],
+  onmessage: function (type, data) {
+    window.__NIH_PLUG_WEBVIEW__.messageBuffer.push({ type, data });
+  },
   postMessage: function (message) {
     if (typeof message !== "string") {
       throw new Error("Message must be a string");
