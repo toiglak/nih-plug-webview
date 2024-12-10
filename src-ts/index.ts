@@ -53,6 +53,14 @@ plugin.onmessage = (type: any, data: any) => {
   });
 };
 
+// FIXME: HACK:
+// Trigger callbacks with any messages that were sent before the IPC object was created.
+export function drainMessageBuffer() {
+  plugin.messageBuffer.forEach((message: any) => {
+    plugin.onmessage(message.type, message.data);
+  });
+}
+
 function arrayToBase64(bytes: Uint8Array): string {
   var binary = "";
   var len = bytes.byteLength;
