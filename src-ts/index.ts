@@ -2,20 +2,31 @@ export type Message =
   | { type: "binary"; data: Uint8Array }
   | { type: "text"; data: string };
 
-// @ts-expect-error
-let postMessage = window.host.postMessage;
-
+/**
+ * IPC (Inter-Process Communication) object used to send and receive messages from the
+ * plugin.
+ */
 // NOTE: We cannot use lowercase `ipc`, because `wry` reserved it in the global scope.
 export const IPC = {
-  on: (event: "message", callback: (message: Readonly<Message>) => void) => {
+  /**
+   * Appends an event listener for the specified event.
+   * - `message` event is emitted when a message is received from the plugin.
+   */
+  on: (event: "message", callback: (message: Message) => void) => {
     onCallbacks.push(callback);
   },
+
+  /**
+   * Sends a message to the plugin. The message can be either a string or a Uint8Array.
+   *
+   * @throws Will throw an error if the message type is not a string or Uint8Array.
+   */
   send: (message: string | Uint8Array) => {
     if (message instanceof Uint8Array) {
-      postMessage("binary," + arrayToBase64(message));
+      plugin.postMessage("binary," + arrayToBase64(message));
       return;
     } else if (typeof message === "string") {
-      postMessage("text," + message);
+      plugin.postMessage("text," + message);
       return;
     } else {
       throw new Error(
@@ -25,10 +36,14 @@ export const IPC = {
   },
 };
 
-const onCallbacks: ((message: Readonly<Message>) => void)[] = [];
+///////////////////////////////////////////////////////////////////////////////
 
 // @ts-expect-error
-window.host.onmessage = (type, data) => {
+const plugin = window.__NIH_PLUG_WEBVIEW__;
+
+const onCallbacks: ((message: Message) => void)[] = [];
+
+plugin.onmessage = (type: any, data: any) => {
   onCallbacks.forEach((callback) => {
     const message = Object.freeze({
       type,

@@ -28,6 +28,8 @@ pub use wry;
 
 mod raw_window_handle;
 
+const PLUGIN_OBJ: &str = "window.__NIH_PLUG_WEBVIEW__";
+
 #[derive(Debug, Clone)]
 pub enum WebviewSource {
     /// Loads a web page from the given URL.
@@ -267,28 +269,7 @@ impl Editor for WebviewEditor {
                     position: Position::Logical(LogicalPosition { x: 0.0, y: 0.0 }),
                     size: wry::dpi::Size::Logical(LogicalSize { width, height }),
                 })
-                .with_initialization_script(
-                    "window.host = {
-                        onmessage: function() {},
-                        postMessage: function(message) {
-                            if (typeof message !== 'string') {
-                                throw new Error('Message must be a string');
-                            }
-                            window.ipc.postMessage(message);
-                        }
-                    };
-                    
-                    window.__NIH_PLUG_WEBVIEW__ = {
-                        decodeBase64: function(base64) {
-                            var binaryString = atob(base64);
-                            var bytes = new Uint8Array(binaryString.length);
-                            for (var i = 0; i < binaryString.length; i++) {
-                                bytes[i] = binaryString.charCodeAt(i);
-                            }
-                            return bytes.buffer;
-                        }
-                    }",
-                )
+                .with_initialization_script(include_str!("lib.js"))
                 .with_ipc_handler(move |request: Request<String>| {
                     let message = request.into_body();
                     if message.starts_with("text,") {
@@ -419,14 +400,13 @@ impl WindowHandler {
         match message {
             RawMessage::Text(text) => {
                 let text = text.replace("`", r#"\`"#);
-                let script = format!("window.host.onmessage(`text`,`{}`);", text);
+                let script = format!("{PLUGIN_OBJ}.onmessage(`text`,`{}`);", text);
                 self.webview.evaluate_script(&script).ok();
             }
             RawMessage::Binary(bytes) => {
                 let bytes = BASE64.encode(&bytes);
                 let script = format!(
-                    "let data = window.__NIH_PLUG_WEBVIEW__.decodeBase64(`{bytes}`);\
-                    window.host.onmessage(`binary`, data);"
+                    "{PLUGIN_OBJ}.onmessage(`binary`, {PLUGIN_OBJ}.decodeBase64(`{bytes}`));"
                 );
                 self.webview.evaluate_script(&script).ok();
             }
