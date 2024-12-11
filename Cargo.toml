@@ -17,6 +17,7 @@ crossbeam = "0.8.4"
 keyboard-types = "0.6.2"
 mime_guess = "2.0.4"
 nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "40269e1", default-features = false }
+objc = "0.2.7"
 raw-window-handle = "0.6.2"
 raw-window-handle-0-5 = { package = "raw-window-handle", version = "0.5.2" }
 serde = ">=1.0"

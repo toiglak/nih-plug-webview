@@ -14,12 +14,13 @@ use nih_plug::{
     params::persist::PersistentField,
     prelude::{Editor, GuiContext, ParamSetter},
 };
+use objc::{msg_send, runtime::Object};
 use raw_window_handle::from_raw_window_handle_0_5_2;
 use serde::{Deserialize, Serialize};
 use wry::{
     dpi::{LogicalPosition, LogicalSize, Position},
     http::{self, header::CONTENT_TYPE, Request, Response},
-    Rect, WebContext, WebView, WebViewBuilder,
+    Rect, WebContext, WebView, WebViewBuilder, WebViewExtMacOS,
 };
 
 pub use baseview;
@@ -306,6 +307,42 @@ impl Editor for WebviewEditor {
             };
 
             let webview = webview_builder.build().expect("Failed to construct webview");
+
+            let machandle = match new_window.as_raw() {
+                ::raw_window_handle::RawWindowHandle::AppKit(app_kit_window_handle) => {
+                    app_kit_window_handle.ns_view
+                }
+                _ => todo!(),
+            };
+
+            let nsview_handle = machandle.as_ptr() as *mut _ as *mut _;
+            let webview_handle = webview.webview();
+
+            // IMPORTANT NOTES:
+            //
+            // - We can reparent the webview by removing it from its current superview and adding it
+            //   to the new window's root view (pointer which we get from the `Editor::spawn`).
+            // - For now this is macos only, hopefully other platforms can also be supported.
+            // - This should hopefully allow us to keep the weview alive between multiple calls to
+            //   `Editor::spawn` so that web content doesn't have to be reloaded every time.
+
+            use objc::*;
+            unsafe {
+                let nsview = nsview_handle as *mut Object;
+                let webview = webview_handle as *mut Object;
+
+                // Remove webview from its current superview
+                let _: () = msg_send![webview, removeFromSuperview];
+
+                // Get the root view of the new window
+                let root_view: *mut Object = nsview;
+
+                // Add webview to the new window's root view
+                let _: () = msg_send![root_view, addSubview: webview];
+
+                // Adjust frame if necessary
+                // For example, set bounds of a new window.
+            }
 
             let window_handler = WindowHandler {
                 init: config.clone(),
