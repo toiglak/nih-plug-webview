@@ -5,6 +5,7 @@ use std::{
         mpsc::{self},
         Arc, Mutex,
     },
+    thread::ThreadId,
 };
 
 use base64::{prelude::BASE64_STANDARD as BASE64, Engine};
@@ -14,7 +15,7 @@ use nih_plug::{
     params::persist::PersistentField,
     prelude::{Editor, GuiContext, ParamSetter},
 };
-use objc::{msg_send, runtime::Object};
+use objc::{runtime::Object, *};
 use raw_window_handle::from_raw_window_handle_0_5_2;
 use serde::{Deserialize, Serialize};
 use wry::{
@@ -117,10 +118,10 @@ impl<'a, 'b> Context<'a, 'b> {
         ParamSetter::new(&*self.handler.context)
     }
 
-    /// Returns a reference to the `WebView` used by the editor.
-    pub fn get_webview(&self) -> &WebView {
-        &self.handler.webview
-    }
+    // /// Returns a reference to the `WebView` used by the editor.
+    // pub fn get_webview(&self) -> &WebView {
+    //     &self.handler.webview
+    // }
 }
 
 /// `nih_plug_webview`'s state that should be persisted between sessions (like window size).
@@ -176,6 +177,7 @@ struct Init {
     source: WebviewSource,
     workdir: PathBuf,
     with_webview_fn: Mutex<Box<dyn Fn(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static>>,
+    webview: Arc<Mutex<Option<WebViewWrapper>>>,
 }
 
 /// A webview-based editor.
@@ -198,6 +200,7 @@ impl WebviewEditor {
                 source: config.source,
                 workdir: config.workdir,
                 with_webview_fn: Mutex::new(Box::new(|w| w)),
+                webview: Arc::new(Mutex::new(None)),
             }),
             params_changed: Arc::new(AtomicBool::new(false)),
         }
@@ -223,6 +226,7 @@ impl WebviewEditor {
                 source: config.source,
                 workdir: config.workdir,
                 with_webview_fn: Mutex::new(Box::new(f)),
+                webview: Arc::new(Mutex::new(None)),
             }),
             params_changed: Arc::new(AtomicBool::new(false)),
         }
@@ -247,107 +251,116 @@ impl Editor for WebviewEditor {
         let params_changed = self.params_changed.clone();
 
         let window_handle = baseview::Window::open_parented(&parent, options, move |mut window| {
-            let Init { state, source, editor, workdir, with_webview_fn, .. } = &*config;
+            let Init {
+                state, source, editor, workdir, with_webview_fn, webview: init_webview, ..
+            } = &*config;
 
             let (webview_to_plugin_tx, plugin_to_webview_rx) = mpsc::channel();
 
             let new_window = from_raw_window_handle_0_5_2(window);
-
-            let mut webview_builder = WebViewBuilder::new_as_child(&new_window);
-
-            // Apply user configuration.
-            webview_builder = with_webview_fn.lock().unwrap()(webview_builder);
-
-            //
-            // Configure the webview.
-
-            let (width, height) = state.size.load();
-
-            let mut web_context = WebContext::new(Some(workdir.clone()));
-
-            let webview_builder = webview_builder
-                .with_bounds(Rect {
-                    position: Position::Logical(LogicalPosition { x: 0.0, y: 0.0 }),
-                    size: wry::dpi::Size::Logical(LogicalSize { width, height }),
-                })
-                .with_initialization_script(include_str!("lib.js"))
-                .with_ipc_handler(move |request: Request<String>| {
-                    let message = request.into_body();
-                    if message.starts_with("text,") {
-                        let message = message.trim_start_matches("text,");
-                        webview_to_plugin_tx.send(RawMessage::Text(message.to_string())).ok();
-                    } else if message.starts_with("binary,") {
-                        let message = message.trim_start_matches("binary,");
-                        let bytes = BASE64.decode(message.as_bytes()).unwrap();
-                        webview_to_plugin_tx.send(RawMessage::Binary(bytes)).ok();
-                    }
-                })
-                .with_web_context(&mut web_context);
-
-            let webview_builder = match (*source).clone() {
-                WebviewSource::URL(url) => webview_builder.with_url(url.as_str()),
-                WebviewSource::HTML(html) => webview_builder.with_html(html),
-                WebviewSource::DirPath(root) => webview_builder
-                    .with_custom_protocol(
-                        "wry".to_string(), //
-                        move |request| match get_wry_response(&root, request) {
-                            Ok(r) => r.map(Into::into),
-                            Err(e) => http::Response::builder()
-                                .header(CONTENT_TYPE, "text/plain")
-                                .status(500)
-                                .body(e.to_string().as_bytes().to_vec())
-                                .unwrap()
-                                .map(Into::into),
-                        },
-                    )
-                    .with_url("wry://localhost"),
-                WebviewSource::CustomProtocol { url, protocol } => {
-                    webview_builder.with_url(format!("{protocol}://localhost/{url}").as_str())
-                }
-            };
-
-            let webview = webview_builder.build().expect("Failed to construct webview");
-
-            let machandle = match new_window.as_raw() {
+            let nsview = match new_window.as_raw() {
                 ::raw_window_handle::RawWindowHandle::AppKit(app_kit_window_handle) => {
                     app_kit_window_handle.ns_view
                 }
-                _ => todo!(),
+                _ => unimplemented!(),
+            };
+            let ns_view = nsview.as_ptr() as *mut Object;
+            let root_view = ns_view;
+
+            let webview = {
+                let init_webview = init_webview.clone();
+                let reuse = init_webview.lock().unwrap().is_some();
+                if reuse {
+                    let mut webview = init_webview.lock().unwrap().take().unwrap();
+
+                    // Reuse the existing WebView
+                    webview.access_mut(|webview| {
+                        unsafe {
+                            let webview_handle = webview.webview();
+                            let webview_obj = webview_handle as *mut Object;
+
+                            // Remove from previous superview
+                            let _: () = msg_send![webview_obj, removeFromSuperview];
+
+                            // Add to new window's root view
+                            let _: () = msg_send![root_view, addSubview: webview_obj];
+                        }
+                    });
+
+                    webview
+                } else {
+                    // Create a new WebView
+                    let mut webview_builder = WebViewBuilder::new_as_child(&new_window);
+
+                    // Apply user configuration
+                    webview_builder = with_webview_fn.lock().unwrap()(webview_builder);
+
+                    // Configure the WebView
+                    let (width, height) = state.size.load();
+
+                    let mut web_context = WebContext::new(Some(workdir.clone()));
+
+                    let webview_builder = webview_builder
+                        .with_bounds(Rect {
+                            position: Position::Logical(LogicalPosition { x: 0.0, y: 0.0 }),
+                            size: wry::dpi::Size::Logical(LogicalSize { width, height }),
+                        })
+                        .with_initialization_script(include_str!("lib.js"))
+                        .with_ipc_handler(move |request: Request<String>| {
+                            let message = request.into_body();
+                            if message.starts_with("text,") {
+                                let message = message.trim_start_matches("text,");
+                                webview_to_plugin_tx
+                                    .send(RawMessage::Text(message.to_string()))
+                                    .ok();
+                            } else if message.starts_with("binary,") {
+                                let message = message.trim_start_matches("binary,");
+                                let bytes = BASE64.decode(message.as_bytes()).unwrap();
+                                webview_to_plugin_tx.send(RawMessage::Binary(bytes)).ok();
+                            }
+                        })
+                        .with_web_context(&mut web_context);
+
+                    let webview_builder = match (*source).clone() {
+                        WebviewSource::URL(url) => webview_builder.with_url(url.as_str()),
+                        WebviewSource::HTML(html) => webview_builder.with_html(html),
+                        WebviewSource::DirPath(root) => webview_builder
+                            .with_custom_protocol("wry".to_string(), move |request| {
+                                match get_wry_response(&root, request) {
+                                    Ok(r) => r.map(Into::into),
+                                    Err(e) => http::Response::builder()
+                                        .header(CONTENT_TYPE, "text/plain")
+                                        .status(500)
+                                        .body(e.to_string().as_bytes().to_vec())
+                                        .unwrap()
+                                        .map(Into::into),
+                                }
+                            })
+                            .with_url("wry://localhost"),
+                        WebviewSource::CustomProtocol { url, protocol } => webview_builder
+                            .with_url(format!("{protocol}://localhost/{url}").as_str()),
+                    };
+
+                    let webview = webview_builder.build().expect("Failed to construct webview");
+
+                    unsafe {
+                        let webview_handle = webview.webview();
+                        let webview_obj = webview_handle as *mut Object;
+
+                        // Add to new window's root view
+                        let _: () = msg_send![root_view, addSubview: webview_obj];
+                    }
+
+                    WebViewWrapper::new(webview)
+                }
             };
 
-            let nsview_handle = machandle.as_ptr() as *mut _ as *mut _;
-            let webview_handle = webview.webview();
-
-            // IMPORTANT NOTES:
-            //
-            // - We can reparent the webview by removing it from its current superview and adding it
-            //   to the new window's root view (pointer which we get from the `Editor::spawn`).
-            // - For now this is macos only, hopefully other platforms can also be supported.
-            // - This should hopefully allow us to keep the weview alive between multiple calls to
-            //   `Editor::spawn` so that web content doesn't have to be reloaded every time.
-
-            use objc::*;
-            unsafe {
-                let nsview = nsview_handle as *mut Object;
-                let webview = webview_handle as *mut Object;
-
-                // Remove webview from its current superview
-                let _: () = msg_send![webview, removeFromSuperview];
-
-                // Get the root view of the new window
-                let root_view: *mut Object = nsview;
-
-                // Add webview to the new window's root view
-                let _: () = msg_send![root_view, addSubview: webview];
-
-                // Adjust frame if necessary
-                // For example, set bounds of a new window.
-            }
+            *init_webview.lock().unwrap() = Some(webview);
 
             let window_handler = WindowHandler {
                 init: config.clone(),
                 context,
-                webview,
+                webview: init_webview.clone(),
                 webview_rx: plugin_to_webview_rx,
                 params_changed,
             };
@@ -359,7 +372,7 @@ impl Editor for WebviewEditor {
             window_handler
         });
 
-        return Box::new(EditorHandle { window_handle });
+        Box::new(EditorHandle { window_handle, init: self.config.clone() })
     }
 
     fn size(&self) -> (u32, u32) {
@@ -389,20 +402,31 @@ impl Editor for WebviewEditor {
 /// call [`drop`] on it when the window is supposed to be closed.
 struct EditorHandle {
     window_handle: baseview::WindowHandle,
+    init: Arc<Init>,
 }
 
 unsafe impl Send for EditorHandle {}
 
 impl Drop for EditorHandle {
     fn drop(&mut self) {
+        // Remove the WebView from its superview but keep it alive
+        if let Some(ref mut webview) = *self.init.webview.lock().unwrap() {
+            webview.access_mut(|webview| {
+                unsafe {
+                    let webview_handle = webview.webview();
+                    let webview_obj = webview_handle as *mut Object;
+                    // Remove from superview
+                    let _: () = msg_send![webview_obj, removeFromSuperview];
+                }
+            });
+        }
         self.window_handle.close();
     }
 }
-
 /// This structure manages the editor window's event loop.
 struct WindowHandler {
     init: Arc<Init>,
-    webview: WebView,
+    webview: Arc<Mutex<Option<WebViewWrapper>>>,
     context: Arc<dyn GuiContext>,
     params_changed: Arc<AtomicBool>,
     webview_rx: mpsc::Receiver<RawMessage>,
@@ -424,10 +448,12 @@ impl WindowHandler {
 
         window.resize(Size { width: width as f64, height: height as f64 });
 
-        // FIXME: handle error?
-        let _ = self.webview.set_bounds(Rect {
-            position: Position::Logical(LogicalPosition { x: 0.0, y: 0.0 }),
-            size: wry::dpi::Size::Logical(LogicalSize { width, height }),
+        self.webview.lock().unwrap().as_ref().unwrap().access(|webview| {
+            // FIXME: handle error?
+            let _ = webview.set_bounds(Rect {
+                position: Position::Logical(LogicalPosition { x: 0.0, y: 0.0 }),
+                size: wry::dpi::Size::Logical(LogicalSize { width, height }),
+            });
         });
 
         true
@@ -438,14 +464,18 @@ impl WindowHandler {
             RawMessage::Text(text) => {
                 let text = text.replace("`", r#"\`"#);
                 let script = format!("{PLUGIN_OBJ}.onmessage(`text`,`{}`);", text);
-                self.webview.evaluate_script(&script).ok();
+                self.webview.lock().unwrap().as_ref().unwrap().access(|webview| {
+                    webview.evaluate_script(&script).ok();
+                });
             }
             RawMessage::Binary(bytes) => {
                 let bytes = BASE64.encode(&bytes);
                 let script = format!(
                     "{PLUGIN_OBJ}.onmessage(`binary`, {PLUGIN_OBJ}.decodeBase64(`{bytes}`));"
                 );
-                self.webview.evaluate_script(&script).ok();
+                self.webview.lock().unwrap().as_ref().unwrap().access(|webview| {
+                    webview.evaluate_script(&script).ok();
+                });
             }
         }
     }
@@ -496,6 +526,42 @@ impl baseview::WindowHandler for WindowHandler {
         }
     }
 }
+
+// todo: make it generic: unwrapping of the value will succeed only if it's done from the
+// same thread as it was created.
+pub struct WebViewWrapper {
+    webview: Option<WebView>,
+    thread_id: ThreadId,
+}
+
+impl WebViewWrapper {
+    pub fn new(webview: WebView) -> Self {
+        WebViewWrapper { webview: Some(webview), thread_id: std::thread::current().id() }
+    }
+
+    pub fn access<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&WebView) -> R,
+    {
+        if self.thread_id != std::thread::current().id() {
+            panic!("Attempted to access WebView from a different thread");
+        }
+        f(self.webview.as_ref().unwrap())
+    }
+
+    pub fn access_mut<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut WebView) -> R,
+    {
+        if self.thread_id != std::thread::current().id() {
+            panic!("Attempted to access WebView from a different thread");
+        }
+        f(self.webview.as_mut().unwrap())
+    }
+}
+
+// Implement Send for WebViewWrapper
+unsafe impl Send for WebViewWrapper {}
 
 fn get_wry_response(
     root: &PathBuf,
