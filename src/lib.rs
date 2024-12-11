@@ -279,8 +279,9 @@ impl Editor for WebviewEditor {
                             let webview_handle = webview.webview();
                             let webview_obj = webview_handle as *mut Object;
 
+                            // We already do this when we drop WindowHandle.
                             // Remove from previous superview
-                            let _: () = msg_send![webview_obj, removeFromSuperview];
+                            // let _: () = msg_send![webview_obj, removeFromSuperview];
 
                             // Add to new window's root view
                             let _: () = msg_send![root_view, addSubview: webview_obj];
