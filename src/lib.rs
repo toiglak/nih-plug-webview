@@ -189,17 +189,7 @@ impl WebviewEditor {
         state: &Arc<WebviewState>,
         config: WebViewConfig,
     ) -> WebviewEditor {
-        WebviewEditor {
-            config: Arc::new(Init {
-                editor: Box::new(Mutex::new(editor)),
-                state: state.clone(),
-                title: config.title,
-                source: config.source,
-                workdir: config.workdir,
-                with_webview_fn: Mutex::new(Box::new(|w| w)),
-            }),
-            params_changed: Arc::new(AtomicBool::new(false)),
-        }
+        Self::new_with_webview(editor, state, config, |webview| webview)
     }
 
     /// Creates a new `WebviewEditor` with the callback which allows you to configure many
