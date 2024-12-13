@@ -18,3 +18,20 @@ window.__NIH_PLUG_WEBVIEW__ = {
     return bytes.buffer;
   },
 };
+
+// NOTE: This won't work, because wry doesn't support streaming receiving or streaming responding.
+
+async function streamingReceive() {
+  // consider renaming this to something less obtrusive, that user may not want to use
+  // like nih=plug-webview or npw
+  const response = await fetch("ipc://localhost");
+  const reader = response.body?.getReader();
+
+  while (reader) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    console.log("Received chunk", value);
+  }
+}
+
+streamingReceive();

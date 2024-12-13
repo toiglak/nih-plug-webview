@@ -3,7 +3,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self},
-        Arc, Mutex,
+        Arc, Mutex, RwLock,
     },
 };
 
@@ -189,17 +189,7 @@ impl WebviewEditor {
         state: &Arc<WebviewState>,
         config: WebViewConfig,
     ) -> WebviewEditor {
-        WebviewEditor {
-            config: Arc::new(Init {
-                editor: Box::new(Mutex::new(editor)),
-                state: state.clone(),
-                title: config.title,
-                source: config.source,
-                workdir: config.workdir,
-                with_webview_fn: Mutex::new(Box::new(|w| w)),
-            }),
-            params_changed: Arc::new(AtomicBool::new(false)),
-        }
+        Self::new_with_webview(editor, state, config, |webview| webview)
     }
 
     /// Creates a new `WebviewEditor` with the callback which allows you to configure many
@@ -214,6 +204,63 @@ impl WebviewEditor {
         config: WebViewConfig,
         f: impl Fn(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static,
     ) -> WebviewEditor {
+        // PLAN:
+        //
+        // According to chat gpt, latency of web socket's ping pong on a local
+        // machine should generally fit within 0.2-0.5ms on windows and 0.1-0.3ms
+        // on unix.
+        //
+        // With that it makes sense to spawn a websocket server per application for
+        // the webview.
+        //
+        // Still, it feels like an overkill for this library. For sflap, which
+        // already has tokio inside of it, it would make sense to spawn a server
+        // and easily handle sending and receiving messages.
+        //
+        // On the other hand, if we don't want to add tokio (for tungestine-tokio)
+        // to the dependencies of this library, we'd have to make workarounds like
+        // I do in the following lines. For that reason, reconsider it.
+
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = server.local_addr().unwrap();
+
+        // Channel used to send data from plugin to the webview.
+        let (tx, rx) = mpsc::channel::<RawMessage>();
+
+        std::thread::spawn(move || {
+            let rx = Arc::new(Mutex::new(rx));
+
+            for stream in server.incoming() {
+                let rx = rx.clone();
+                std::thread::spawn(move || {
+                    // Forward messages from plugin to webview.
+
+                    let mut websocket = tungstenite::accept(stream.unwrap()).unwrap();
+
+                    let rx = rx.lock().unwrap();
+
+                    while let Some(msg) = rx.recv().ok() {
+                        match msg {
+                            RawMessage::Text(text) => {
+                                if let Err(err) = websocket.send(tungstenite::Message::Text(text)) {
+                                    eprintln!("Failed to send message to websocket: {:?}", err);
+                                    break;
+                                }
+                            }
+                            RawMessage::Binary(bytes) => {
+                                if let Err(err) =
+                                    websocket.send(tungstenite::Message::Binary(bytes))
+                                {
+                                    eprintln!("Failed to send message to websocket: {:?}", err);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+
         WebviewEditor {
             config: Arc::new(Init {
                 editor: Box::new(Mutex::new(editor)),

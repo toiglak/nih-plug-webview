@@ -20,6 +20,7 @@ nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "40269e1
 raw-window-handle = "0.6.2"
 raw-window-handle-0-5 = { package = "raw-window-handle", version = "0.5.2" }
 serde = ">=1.0"
+tungstenite = "0.24.0"
 wry = "0.45.0"
 
 
