@@ -238,7 +238,7 @@ impl Editor for WebviewEditor {
         let window_handle = baseview::Window::open_parented(&parent, options, move |mut window| {
             let Init { state, source, editor, workdir, with_webview_fn, .. } = &*config;
 
-            let (webview_to_plugin_tx, plugin_to_webview_rx) = mpsc::channel();
+            let (webview_rx_tx, webview_rx) = mpsc::channel();
 
             let new_window = from_raw_window_handle_0_5_2(window);
 
@@ -264,11 +264,11 @@ impl Editor for WebviewEditor {
                     let message = request.into_body();
                     if message.starts_with("text,") {
                         let message = message.trim_start_matches("text,");
-                        webview_to_plugin_tx.send(RawMessage::Text(message.to_string())).ok();
+                        webview_rx_tx.send(RawMessage::Text(message.to_string())).ok();
                     } else if message.starts_with("binary,") {
                         let message = message.trim_start_matches("binary,");
                         let bytes = BASE64.decode(message.as_bytes()).unwrap();
-                        webview_to_plugin_tx.send(RawMessage::Binary(bytes)).ok();
+                        webview_rx_tx.send(RawMessage::Binary(bytes)).ok();
                     }
                 })
                 .with_web_context(&mut web_context);
@@ -301,7 +301,7 @@ impl Editor for WebviewEditor {
                 init: config.clone(),
                 context,
                 webview,
-                webview_rx: plugin_to_webview_rx,
+                webview_rx,
                 params_changed,
             };
 
