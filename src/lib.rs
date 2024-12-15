@@ -72,7 +72,7 @@ pub enum WebviewSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum RawMessage {
+pub enum Message {
     Text(String),
     Binary(Vec<u8>),
 }
@@ -80,7 +80,7 @@ pub enum RawMessage {
 pub trait EditorHandler: Send + 'static {
     fn init(&mut self, cx: &mut Context);
     fn on_frame(&mut self, cx: &mut Context);
-    fn on_message(&mut self, cx: &mut Context, message: RawMessage);
+    fn on_message(&mut self, cx: &mut Context, message: Message);
     fn on_window_event(&mut self, cx: &mut Context, event: Event) -> EventStatus {
         let _ = (cx, event);
         EventStatus::Ignored
@@ -94,7 +94,7 @@ pub struct Context<'a, 'b> {
 
 impl<'a, 'b> Context<'a, 'b> {
     /// Send a message to the plugin.
-    pub fn send_message(&mut self, message: RawMessage) {
+    pub fn send_message(&mut self, message: Message) {
         self.handler.send_message(message);
     }
 
@@ -264,11 +264,11 @@ impl Editor for WebviewEditor {
                     let message = request.into_body();
                     if message.starts_with("text,") {
                         let message = message.trim_start_matches("text,");
-                        webview_rx_tx.send(RawMessage::Text(message.to_string())).ok();
+                        webview_rx_tx.send(Message::Text(message.to_string())).ok();
                     } else if message.starts_with("binary,") {
                         let message = message.trim_start_matches("binary,");
                         let bytes = BASE64.decode(message.as_bytes()).unwrap();
-                        webview_rx_tx.send(RawMessage::Binary(bytes)).ok();
+                        webview_rx_tx.send(Message::Binary(bytes)).ok();
                     }
                 })
                 .with_web_context(&mut web_context);
@@ -358,7 +358,7 @@ struct WindowHandler {
     webview: WebView,
     context: Arc<dyn GuiContext>,
     params_changed: Arc<AtomicBool>,
-    webview_rx: mpsc::Receiver<RawMessage>,
+    webview_rx: mpsc::Receiver<Message>,
 }
 
 impl WindowHandler {
@@ -386,14 +386,14 @@ impl WindowHandler {
         true
     }
 
-    fn send_message(&self, message: RawMessage) {
+    fn send_message(&self, message: Message) {
         match message {
-            RawMessage::Text(text) => {
+            Message::Text(text) => {
                 let text = text.replace("`", r#"\`"#);
                 let script = format!("{PLUGIN_OBJ}.onmessage(`text`,`{}`);", text);
                 self.webview.evaluate_script(&script).ok();
             }
-            RawMessage::Binary(bytes) => {
+            Message::Binary(bytes) => {
                 let bytes = BASE64.encode(&bytes);
                 let script = format!(
                     "{PLUGIN_OBJ}.onmessage(`binary`, {PLUGIN_OBJ}.decodeBase64(`{bytes}`));"
@@ -403,7 +403,7 @@ impl WindowHandler {
         }
     }
 
-    fn next_message(&self) -> Result<RawMessage, mpsc::TryRecvError> {
+    fn next_message(&self) -> Result<Message, mpsc::TryRecvError> {
         self.webview_rx.try_recv()
     }
 }

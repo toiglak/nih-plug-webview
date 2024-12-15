@@ -2,7 +2,7 @@ use std::{borrow::Cow, path::PathBuf, process::Command, sync::Arc};
 
 use nih_plug::prelude::*;
 use nih_plug_webview::{
-    Context, EditorHandler, RawMessage, WebViewConfig, WebviewEditor, WebviewSource, WebviewState,
+    Context, EditorHandler, Message, WebViewConfig, WebviewEditor, WebviewSource, WebviewState,
 };
 use wry::http::Response;
 
@@ -80,9 +80,9 @@ impl EditorHandler for SimpleEditor {
 
     fn on_frame(&mut self, _: &mut Context) {}
 
-    fn on_message(&mut self, cx: &mut Context, message: RawMessage) {
+    fn on_message(&mut self, cx: &mut Context, message: Message) {
         println!("Received message: {:?}", message);
-        cx.send_message(RawMessage::Text("Hello from Rust!".to_string()));
+        cx.send_message(Message::Text("Hello from Rust!".to_string()));
     }
 }
 
