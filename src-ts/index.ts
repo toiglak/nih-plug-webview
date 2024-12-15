@@ -36,16 +36,6 @@ export const IPC = {
   },
 };
 
-// FIXME: This is a hack. We should not buffer messages, they should just get lost. User
-// should just send "Ready" message and wait for response from handler.
-//
-/** Trigger callbacks with any messages that were received before the IPC object was created. */
-export function dispatchPendingMessages() {
-  plugin.messageBuffer.forEach((message: any) => {
-    plugin.onmessage(message.type, message.data);
-  });
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 
 // @ts-expect-error
