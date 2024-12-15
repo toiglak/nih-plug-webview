@@ -71,7 +71,7 @@ pub enum WebviewSource {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RawMessage {
     Text(String),
     Binary(Vec<u8>),
