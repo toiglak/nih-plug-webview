@@ -348,6 +348,7 @@ unsafe impl Send for EditorHandle {}
 
 impl Drop for EditorHandle {
     fn drop(&mut self) {
+        // TODO: Consider notifying the plugin that the window was closed.
         self.window_handle.close();
     }
 }
