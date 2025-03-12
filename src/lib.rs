@@ -349,6 +349,8 @@ impl Editor for WebviewEditor {
             };
 
             webview.reparent(window_ptr.as_ptr()).unwrap();
+            // NT.
+            webview.focus_parent().unwrap();
 
             ////
 
