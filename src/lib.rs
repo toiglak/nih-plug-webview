@@ -1,5 +1,6 @@
 use std::{
     path::PathBuf,
+    rc::Rc,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self},
@@ -240,8 +241,6 @@ impl Editor for WebviewEditor {
 
             let (webview_rx_tx, webview_rx) = mpsc::channel();
 
-            let new_window = from_raw_window_handle_0_5_2(window);
-
             let mut webview_builder = WebViewBuilder::new();
 
             // Apply user configuration.
@@ -295,6 +294,8 @@ impl Editor for WebviewEditor {
                 }
             };
 
+            let new_window = from_raw_window_handle_0_5_2(window);
+
             let webview =
                 webview_builder.build_as_child(&new_window).expect("Failed to construct webview");
 
@@ -313,7 +314,7 @@ impl Editor for WebviewEditor {
             let window_handler = WindowHandler {
                 init: config.clone(),
                 context,
-                webview,
+                webview: Rc::new(webview),
                 webview_rx,
                 params_changed,
             };
@@ -369,7 +370,7 @@ impl Drop for EditorHandle {
 /// This structure manages the editor window's event loop.
 struct WindowHandler {
     init: Arc<Init>,
-    webview: WebView,
+    webview: Rc<WebView>,
     context: Arc<dyn GuiContext>,
     params_changed: Arc<AtomicBool>,
     webview_rx: mpsc::Receiver<Message>,
