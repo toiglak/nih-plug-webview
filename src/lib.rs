@@ -1,15 +1,15 @@
 use std::{
+    cell::RefCell,
     path::PathBuf,
     rc::Rc,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::{self},
         Arc, Mutex,
     },
 };
 
 use base64::{prelude::BASE64_STANDARD as BASE64, Engine};
-use baseview::{Event, EventStatus, Size, Window, WindowOpenOptions, WindowScalePolicy};
+use baseview::{Event, EventStatus, Size, Window};
 use crossbeam::atomic::AtomicCell;
 use nih_plug::{
     params::persist::PersistentField,
@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use wry::{
     dpi::{LogicalPosition, LogicalSize, Position},
     http::{self, header::CONTENT_TYPE, Request, Response},
-    Rect, WebContext, WebView, WebViewBuilder, WebViewExtMacOS,
+    Rect, WebContext, WebView, WebViewBuilder,
 };
 
 pub use baseview;
@@ -81,7 +81,7 @@ pub enum Message {
 pub trait EditorHandler: Send + 'static {
     fn init(&mut self, cx: &mut Context);
     fn on_frame(&mut self, cx: &mut Context);
-    fn on_message(&mut self, cx: &mut Context, message: Message);
+    fn on_message(&mut self, send_message: &dyn Fn(Message), message: Message);
     fn on_window_event(&mut self, cx: &mut Context, event: Event) -> EventStatus {
         let _ = (cx, event);
         EventStatus::Ignored
@@ -172,6 +172,7 @@ pub struct WebViewConfig {
 struct Init {
     editor: Box<Mutex<dyn EditorHandler>>,
     state: Arc<WebviewState>,
+    #[expect(unused)]
     title: String,
     source: WebviewSource,
     workdir: PathBuf,
@@ -223,34 +224,35 @@ impl Editor for WebviewEditor {
     fn spawn(
         &self,
         parent: nih_plug::prelude::ParentWindowHandle,
-        context: Arc<dyn GuiContext>,
+        _context: Arc<dyn GuiContext>,
     ) -> Box<dyn std::any::Any + Send> {
-        let (width, height) = self.config.state.size.load();
+        // let (width, height) = self.config.state.size.load();
 
-        let options = WindowOpenOptions {
-            scale: WindowScalePolicy::SystemScaleFactor,
-            size: baseview::Size { width, height },
-            title: self.config.title.clone(),
-        };
+        // let options = WindowOpenOptions {
+        //     scale: WindowScalePolicy::SystemScaleFactor,
+        //     size: baseview::Size { width, height },
+        //     title: self.config.title.clone(),
+        // };
 
         let config = self.config.clone();
-        let params_changed = self.params_changed.clone();
+        // let params_changed = self.params_changed.clone();
 
         ////
+
+        let webview_rc = Rc::new(RefCell::new(None));
 
         //
         // Configure the webview.
 
-        let Init { state, source, editor, workdir, with_webview_fn, .. } = &*config;
-        let (webview_rx_tx, webview_rx) = mpsc::channel();
-        let (width, height) = state.size.load();
+        // let Init { state, source, editor, workdir, with_webview_fn, .. } = &*config;
+        let (width, height) = config.state.size.load();
 
         let mut webview_builder = WebViewBuilder::new();
 
         // Apply user configuration.
-        webview_builder = with_webview_fn.lock().unwrap()(webview_builder);
+        webview_builder = config.with_webview_fn.lock().unwrap()(webview_builder);
 
-        let mut _web_context = WebContext::new(Some(workdir.clone()));
+        let mut _web_context = WebContext::new(Some(config.workdir.clone()));
 
         let webview_builder = webview_builder
             .with_bounds(Rect {
@@ -258,20 +260,46 @@ impl Editor for WebviewEditor {
                 size: wry::dpi::Size::Logical(LogicalSize { width, height }),
             })
             .with_initialization_script(include_str!("lib.js"))
-            .with_ipc_handler(move |request: Request<String>| {
-                let message = request.into_body();
-                if message.starts_with("text,") {
-                    let message = message.trim_start_matches("text,");
-                    webview_rx_tx.send(Message::Text(message.to_string())).ok();
-                } else if message.starts_with("binary,") {
-                    let message = message.trim_start_matches("binary,");
-                    let bytes = BASE64.decode(message.as_bytes()).unwrap();
-                    webview_rx_tx.send(Message::Binary(bytes)).ok();
+            .with_ipc_handler({
+                let webview_rc = webview_rc.clone();
+                let config = config.clone();
+                move |request: Request<String>| {
+                    let webview = webview_rc.borrow();
+                    let webview: &WebView = webview.as_ref().unwrap();
+                    let message = request.into_body();
+
+                    let send_message = |message: Message| {
+                        match message {
+                            Message::Text(text) => {
+                                let text = text.replace("`", r#"\`"#);
+                                let script = format!("{PLUGIN_OBJ}.onmessage(`text`,`{}`);", text);
+                                webview.evaluate_script(&script).ok();
+                            }
+                            Message::Binary(bytes) => {
+                                let bytes = BASE64.encode(&bytes);
+                                let script = format!(
+                                    "{PLUGIN_OBJ}.onmessage(`binary`, {PLUGIN_OBJ}.decodeBase64(`{bytes}`));"
+                                );
+                                webview.evaluate_script(&script).ok();
+                            }
+                        }
+                    };
+
+                    if message.starts_with("text,") {
+                        let message = message.trim_start_matches("text,");
+                        let mut editor = config.editor.lock().unwrap();
+                        editor.on_message(&send_message, Message::Text(message.to_string()));
+                    } else if message.starts_with("binary,") {
+                        let message = message.trim_start_matches("binary,");
+                        let bytes = BASE64.decode(message.as_bytes()).unwrap();
+                        let mut editor = config.editor.lock().unwrap();
+                        editor.on_message(&send_message,Message::Binary(bytes));
+                    }
                 }
             });
         // .with_web_context(&mut web_context);
 
-        let webview_builder = match (*source).clone() {
+        let webview_builder = match config.source.clone() {
             WebviewSource::URL(url) => webview_builder.with_url(url.as_str()),
             WebviewSource::HTML(html) => webview_builder.with_html(html),
             WebviewSource::DirPath(root) => webview_builder
@@ -297,6 +325,8 @@ impl Editor for WebviewEditor {
 
         let webview =
             webview_builder.build_as_child(&new_window).expect("Failed to construct webview");
+
+        webview_rc.replace(Some(webview));
 
         // let window_handle = baseview::Window::open_parented(&parent, options, move |mut window| {
         //     // Theoretically, this is reparenting! I wonder if it would allow us to
@@ -326,7 +356,7 @@ impl Editor for WebviewEditor {
         //     window_handler
         // });
 
-        return Box::new(EditorHandle { window_handle: webview });
+        return Box::new(EditorHandle { window_handle: webview_rc });
     }
 
     fn size(&self) -> (u32, u32) {
@@ -355,7 +385,8 @@ impl Editor for WebviewEditor {
 /// A handle to the editor window, returned from [`Editor::spawn`]. Host will
 /// call [`drop`] on it when the window is supposed to be closed.
 struct EditorHandle {
-    window_handle: WebView,
+    #[expect(unused)]
+    window_handle: Rc<RefCell<Option<WebView>>>,
 }
 
 unsafe impl Send for EditorHandle {}
@@ -373,7 +404,6 @@ struct WindowHandler {
     webview: Rc<WebView>,
     context: Arc<dyn GuiContext>,
     params_changed: Arc<AtomicBool>,
-    webview_rx: mpsc::Receiver<Message>,
 }
 
 impl WindowHandler {
@@ -417,10 +447,6 @@ impl WindowHandler {
             }
         }
     }
-
-    fn next_message(&self) -> Result<Message, mpsc::TryRecvError> {
-        self.webview_rx.try_recv()
-    }
 }
 
 impl baseview::WindowHandler for WindowHandler {
@@ -428,11 +454,6 @@ impl baseview::WindowHandler for WindowHandler {
         if let Err(err) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut editor = self.init.editor.lock().unwrap();
             let mut cx = self.context(window);
-
-            // Call on_message for each message received from the webview.
-            while let Ok(message) = self.next_message() {
-                editor.on_message(&mut cx, message);
-            }
 
             editor.on_frame(&mut cx);
         })) {
