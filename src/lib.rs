@@ -242,10 +242,37 @@ impl Editor for WebviewEditor {
 
             webview.reparent(window_ptr).unwrap();
 
-            // TODO: build_as_child must do something which gives it focus.
-            // NOTE: Vital doesn't receive the focus, and yet sflap DOES during cold startup!
+            // TODO: build_as_child must do something which gives it focus. NOTE:
+            // Vital doesn't receive the focus, and yet sflap DOES during cold
+            // startup! Or maybe we just "get lucky" the first time (we do
+            // something right compared to Vital) but then when reparenting it
+            // breaks.
+            //
+            // Go over build_as_child carefully. Look at all places where ns_view
+            // is passed.
+            //
+            // It's probably this:
+            // let app = NSApplication::sharedApplication(mtm);
+            // if os_major_version >= 14 {
+            //     NSApplication::activate(&app);
+            // } else {
+            //     #[allow(deprecated)]
+            //     NSApplication::activateIgnoringOtherApps(&app, true);
+            // }
+
             // webview.focus_parent().unwrap();
             // webview.focus_parent().unwrap();
+            // webview.evaluate_script("window.focus(); console.log('focus'); document.focus();").unwrap();
+
+            // Okay, so this works in focusing the window, but it doesn't fix the keyboard focus.
+            // But we're close now.
+            webview.activate().unwrap();
+            // For some reason, reloading the page fixes keyboard?
+            webview.reload().unwrap();
+
+
+            // TODO: Fork wry for real for real.
+            // TODO: For now, reloading webview is fine.
 
             return Box::new(EditorHandle { webview });
         }
@@ -266,6 +293,8 @@ impl Editor for WebviewEditor {
         let mut _web_context = WebContext::new(Some(config.workdir.clone()));
 
         let webview_builder = webview_builder
+            .with_accept_first_mouse(true)
+            .with_focused(true)
             .with_bounds(Rect {
                 position: Position::Logical(LogicalPosition { x: 0.0, y: 0.0 }),
                 size: wry::dpi::Size::Logical(LogicalSize { width, height }),
@@ -362,57 +391,6 @@ impl Editor for WebviewEditor {
         
         let webview = Rc::new(webview);
         webview_rc.replace(Some(webview.clone()));
-
-        //// We need on_frame
-
-        // let (width, height) = self.config.state.size.load();
-
-        // let options = WindowOpenOptions {
-        //     scale: WindowScalePolicy::SystemScaleFactor,
-        //     size: baseview::Size { width, height },
-        //     title: self.config.title.clone(),
-        // };
-
-        // let config = self.config.clone();
-        // let params_changed = self.params_changed.clone();
-        // let __webview_rc = UnsafeSend(webview_rc.clone());
-        // let __new_window = UnsafeSend(new_window.clone());
-
-        // let window_handle = baseview::Window::open_parented(&parent, options, move |mut window| {
-        //     println!("inside baseview::Window::open_parented");
-
-        //     // Theoretically, this is reparenting! I wonder if it would allow us to
-        //     // preserve the webview between window close/open?
-
-        //     let webview = __webview_rc;
-        //     let webview = webview.0.borrow().clone().unwrap();
-        //     let new_window = __new_window;
-        //     let new_window = new_window.0;
-
-        //     ////
-
-        //     let window_ptr = match new_window.as_raw() {
-        //         ::raw_window_handle::RawWindowHandle::AppKit(app_kit_window_handle) => {
-        //             { app_kit_window_handle.ns_view }.cast::<_>() // i cannot believe it worked lol
-        //         }
-        //         _ => todo!(),
-        //     };
-
-        //     webview.reparent(window_ptr.as_ptr()).unwrap();
-        //     // NT.
-        //     // webview.focus_parent().unwrap();
-
-        //     ////
-
-        //     let window_handler =
-        //         WindowHandler { init: config.clone(), context, webview, params_changed };
-
-        //     let mut editor = config.editor.lock().unwrap();
-        //     let mut cx = window_handler.context(&mut window);
-        //     editor.init(&mut cx);
-
-        //     window_handler
-        // });
 
         return Box::new(EditorHandle { webview });
     }
