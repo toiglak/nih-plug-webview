@@ -236,97 +236,97 @@ impl Editor for WebviewEditor {
         let config = self.config.clone();
         let params_changed = self.params_changed.clone();
 
-        let window_handle = baseview::Window::open_parented(&parent, options, move |mut window| {
-            let Init { state, source, editor, workdir, with_webview_fn, .. } = &*config;
+        ////
 
-            let (webview_rx_tx, webview_rx) = mpsc::channel();
+        //
+        // Configure the webview.
 
-            let mut webview_builder = WebViewBuilder::new();
+        let Init { state, source, editor, workdir, with_webview_fn, .. } = &*config;
+        let (webview_rx_tx, webview_rx) = mpsc::channel();
+        let (width, height) = state.size.load();
 
-            // Apply user configuration.
-            webview_builder = with_webview_fn.lock().unwrap()(webview_builder);
+        let mut webview_builder = WebViewBuilder::new();
 
-            //
-            // Configure the webview.
+        // Apply user configuration.
+        webview_builder = with_webview_fn.lock().unwrap()(webview_builder);
 
-            let (width, height) = state.size.load();
+        let mut _web_context = WebContext::new(Some(workdir.clone()));
 
-            let mut _web_context = WebContext::new(Some(workdir.clone()));
-
-            let webview_builder = webview_builder
-                .with_bounds(Rect {
-                    position: Position::Logical(LogicalPosition { x: 0.0, y: 0.0 }),
-                    size: wry::dpi::Size::Logical(LogicalSize { width, height }),
-                })
-                .with_initialization_script(include_str!("lib.js"))
-                .with_ipc_handler(move |request: Request<String>| {
-                    let message = request.into_body();
-                    if message.starts_with("text,") {
-                        let message = message.trim_start_matches("text,");
-                        webview_rx_tx.send(Message::Text(message.to_string())).ok();
-                    } else if message.starts_with("binary,") {
-                        let message = message.trim_start_matches("binary,");
-                        let bytes = BASE64.decode(message.as_bytes()).unwrap();
-                        webview_rx_tx.send(Message::Binary(bytes)).ok();
-                    }
-                });
-            // .with_web_context(&mut web_context);
-
-            let webview_builder = match (*source).clone() {
-                WebviewSource::URL(url) => webview_builder.with_url(url.as_str()),
-                WebviewSource::HTML(html) => webview_builder.with_html(html),
-                WebviewSource::DirPath(root) => webview_builder
-                    .with_custom_protocol(
-                        "wry".to_string(), //
-                        move |_id, request| match get_wry_response(&root, request) {
-                            Ok(r) => r.map(Into::into),
-                            Err(e) => http::Response::builder()
-                                .header(CONTENT_TYPE, "text/plain")
-                                .status(500)
-                                .body(e.to_string().as_bytes().to_vec())
-                                .unwrap()
-                                .map(Into::into),
-                        },
-                    )
-                    .with_url("wry://localhost"),
-                WebviewSource::CustomProtocol { url, protocol } => {
-                    webview_builder.with_url(format!("{protocol}://localhost/{url}").as_str())
+        let webview_builder = webview_builder
+            .with_bounds(Rect {
+                position: Position::Logical(LogicalPosition { x: 0.0, y: 0.0 }),
+                size: wry::dpi::Size::Logical(LogicalSize { width, height }),
+            })
+            .with_initialization_script(include_str!("lib.js"))
+            .with_ipc_handler(move |request: Request<String>| {
+                let message = request.into_body();
+                if message.starts_with("text,") {
+                    let message = message.trim_start_matches("text,");
+                    webview_rx_tx.send(Message::Text(message.to_string())).ok();
+                } else if message.starts_with("binary,") {
+                    let message = message.trim_start_matches("binary,");
+                    let bytes = BASE64.decode(message.as_bytes()).unwrap();
+                    webview_rx_tx.send(Message::Binary(bytes)).ok();
                 }
-            };
+            });
+        // .with_web_context(&mut web_context);
 
-            let new_window = from_raw_window_handle_0_5_2(window);
+        let webview_builder = match (*source).clone() {
+            WebviewSource::URL(url) => webview_builder.with_url(url.as_str()),
+            WebviewSource::HTML(html) => webview_builder.with_html(html),
+            WebviewSource::DirPath(root) => webview_builder
+                .with_custom_protocol(
+                    "wry".to_string(), //
+                    move |_id, request| match get_wry_response(&root, request) {
+                        Ok(r) => r.map(Into::into),
+                        Err(e) => http::Response::builder()
+                            .header(CONTENT_TYPE, "text/plain")
+                            .status(500)
+                            .body(e.to_string().as_bytes().to_vec())
+                            .unwrap()
+                            .map(Into::into),
+                    },
+                )
+                .with_url("wry://localhost"),
+            WebviewSource::CustomProtocol { url, protocol } => {
+                webview_builder.with_url(format!("{protocol}://localhost/{url}").as_str())
+            }
+        };
 
-            let webview =
-                webview_builder.build_as_child(&new_window).expect("Failed to construct webview");
+        let new_window = from_raw_window_handle_0_5_2(&parent);
 
-            // Theoretically, this is reparenting! I wonder if it would allow us to
-            // preserve the webview between window close/open?
+        let webview =
+            webview_builder.build_as_child(&new_window).expect("Failed to construct webview");
 
-            // let window_ptr = match new_window.as_raw() {
-            //     ::raw_window_handle::RawWindowHandle::AppKit(app_kit_window_handle) => {
-            //         { app_kit_window_handle.ns_view }.cast::<_>() // i cannot believe it worked lol
-            //     }
-            //     _ => todo!(),
-            // };
-            //
-            // webview.reparent(window_ptr.as_ptr()).unwrap();
+        // let window_handle = baseview::Window::open_parented(&parent, options, move |mut window| {
+        //     // Theoretically, this is reparenting! I wonder if it would allow us to
+        //     // preserve the webview between window close/open?
 
-            let window_handler = WindowHandler {
-                init: config.clone(),
-                context,
-                webview: Rc::new(webview),
-                webview_rx,
-                params_changed,
-            };
+        //     // let window_ptr = match new_window.as_raw() {
+        //     //     ::raw_window_handle::RawWindowHandle::AppKit(app_kit_window_handle) => {
+        //     //         { app_kit_window_handle.ns_view }.cast::<_>() // i cannot believe it worked lol
+        //     //     }
+        //     //     _ => todo!(),
+        //     // };
+        //     //
+        //     // webview.reparent(window_ptr.as_ptr()).unwrap();
 
-            let mut editor = editor.lock().unwrap();
-            let mut cx = window_handler.context(&mut window);
-            editor.init(&mut cx);
+        //     let window_handler = WindowHandler {
+        //         init: config.clone(),
+        //         context,
+        //         webview: Rc::new(webview),
+        //         webview_rx,
+        //         params_changed,
+        //     };
 
-            window_handler
-        });
+        //     let mut editor = editor.lock().unwrap();
+        //     let mut cx = window_handler.context(&mut window);
+        //     editor.init(&mut cx);
 
-        return Box::new(EditorHandle { window_handle });
+        //     window_handler
+        // });
+
+        return Box::new(EditorHandle { window_handle: webview });
     }
 
     fn size(&self) -> (u32, u32) {
@@ -355,7 +355,7 @@ impl Editor for WebviewEditor {
 /// A handle to the editor window, returned from [`Editor::spawn`]. Host will
 /// call [`drop`] on it when the window is supposed to be closed.
 struct EditorHandle {
-    window_handle: baseview::WindowHandle,
+    window_handle: WebView,
 }
 
 unsafe impl Send for EditorHandle {}
@@ -363,7 +363,7 @@ unsafe impl Send for EditorHandle {}
 impl Drop for EditorHandle {
     fn drop(&mut self) {
         // TODO: Consider notifying the plugin that the window was closed.
-        self.window_handle.close();
+        // self.window_handle.close();
     }
 }
 
