@@ -9,7 +9,7 @@ use std::{
 };
 
 use base64::{prelude::BASE64_STANDARD as BASE64, Engine};
-use baseview::{Event, EventStatus, Size, Window, WindowOpenOptions, WindowScalePolicy};
+use baseview::{Event, EventStatus, Size, Window};
 use crossbeam::atomic::AtomicCell;
 use nih_plug::{
     params::persist::PersistentField,
@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use wry::{
     dpi::{LogicalPosition, LogicalSize, Position},
     http::{self, header::CONTENT_TYPE, Request, Response},
-    Rect, WebContext, WebView, WebViewBuilder, WebViewExtMacOS,
+    Rect, WebContext, WebView, WebViewBuilder,
 };
 
 pub use baseview;
@@ -172,6 +172,7 @@ pub struct WebViewConfig {
 struct Init {
     editor: Box<Mutex<dyn EditorHandler>>,
     state: Arc<WebviewState>,
+    #[expect(unused)]
     title: String,
     source: WebviewSource,
     workdir: PathBuf,
@@ -223,7 +224,7 @@ impl Editor for WebviewEditor {
     fn spawn(
         &self,
         parent: nih_plug::prelude::ParentWindowHandle,
-        context: Arc<dyn GuiContext>,
+        _context: Arc<dyn GuiContext>,
     ) -> Box<dyn std::any::Any + Send> {
         let webview_rc = Rc::new(RefCell::new(<Option<Rc<WebView>>>::None));
         let config = self.config.clone();
@@ -242,6 +243,7 @@ impl Editor for WebviewEditor {
         let mut _web_context = WebContext::new(Some(config.workdir.clone()));
 
         let webview_builder = webview_builder
+
             .with_bounds(Rect {
                 position: Position::Logical(LogicalPosition { x: 0.0, y: 0.0 }),
                 size: wry::dpi::Size::Logical(LogicalSize { width, height }),
@@ -317,54 +319,56 @@ impl Editor for WebviewEditor {
 
         //// We need on_frame
 
-        let (width, height) = self.config.state.size.load();
+        // let (width, height) = self.config.state.size.load();
 
-        let options = WindowOpenOptions {
-            scale: WindowScalePolicy::SystemScaleFactor,
-            size: baseview::Size { width, height },
-            title: self.config.title.clone(),
-        };
+        // let options = WindowOpenOptions {
+        //     scale: WindowScalePolicy::SystemScaleFactor,
+        //     size: baseview::Size { width, height },
+        //     title: self.config.title.clone(),
+        // };
 
-        let config = self.config.clone();
-        let params_changed = self.params_changed.clone();
-        let __webview_rc = UnsafeSend(webview_rc.clone());
-        let __new_window = UnsafeSend(new_window.clone());
+        // let config = self.config.clone();
+        // let params_changed = self.params_changed.clone();
+        // let __webview_rc = UnsafeSend(webview_rc.clone());
+        // let __new_window = UnsafeSend(new_window.clone());
 
-        let window_handle = baseview::Window::open_parented(&parent, options, move |mut window| {
-            // Theoretically, this is reparenting! I wonder if it would allow us to
-            // preserve the webview between window close/open?
+        // let window_handle = baseview::Window::open_parented(&parent, options, move |mut window| {
+        //     println!("inside baseview::Window::open_parented");
 
-            let webview = __webview_rc;
-            let webview = webview.0.borrow().clone().unwrap();
-            let new_window = __new_window;
-            let new_window = new_window.0;
+        //     // Theoretically, this is reparenting! I wonder if it would allow us to
+        //     // preserve the webview between window close/open?
 
-            ////
+        //     let webview = __webview_rc;
+        //     let webview = webview.0.borrow().clone().unwrap();
+        //     let new_window = __new_window;
+        //     let new_window = new_window.0;
 
-            let window_ptr = match new_window.as_raw() {
-                ::raw_window_handle::RawWindowHandle::AppKit(app_kit_window_handle) => {
-                    { app_kit_window_handle.ns_view }.cast::<_>() // i cannot believe it worked lol
-                }
-                _ => todo!(),
-            };
+        //     ////
 
-            webview.reparent(window_ptr.as_ptr()).unwrap();
-            // NT.
-            webview.focus_parent().unwrap();
+        //     let window_ptr = match new_window.as_raw() {
+        //         ::raw_window_handle::RawWindowHandle::AppKit(app_kit_window_handle) => {
+        //             { app_kit_window_handle.ns_view }.cast::<_>() // i cannot believe it worked lol
+        //         }
+        //         _ => todo!(),
+        //     };
 
-            ////
+        //     webview.reparent(window_ptr.as_ptr()).unwrap();
+        //     // NT.
+        //     // webview.focus_parent().unwrap();
 
-            let window_handler =
-                WindowHandler { init: config.clone(), context, webview, params_changed };
+        //     ////
 
-            let mut editor = config.editor.lock().unwrap();
-            let mut cx = window_handler.context(&mut window);
-            editor.init(&mut cx);
+        //     let window_handler =
+        //         WindowHandler { init: config.clone(), context, webview, params_changed };
 
-            window_handler
-        });
+        //     let mut editor = config.editor.lock().unwrap();
+        //     let mut cx = window_handler.context(&mut window);
+        //     editor.init(&mut cx);
 
-        return Box::new(EditorHandle { webview: webview_rc, window_handle });
+        //     window_handler
+        // });
+
+        return Box::new(EditorHandle { webview: webview_rc });
     }
 
     fn size(&self) -> (u32, u32) {
@@ -395,8 +399,6 @@ impl Editor for WebviewEditor {
 struct EditorHandle {
     #[expect(unused)]
     webview: Rc<RefCell<Option<Rc<WebView>>>>,
-    #[expect(unused)]
-    window_handle: baseview::WindowHandle,
 }
 
 unsafe impl Send for EditorHandle {}
@@ -516,5 +518,5 @@ fn get_wry_response(
     Response::builder().header(CONTENT_TYPE, mimetype).body(content).map_err(Into::into)
 }
 
-struct UnsafeSend<T>(T);
-unsafe impl<T> Send for UnsafeSend<T> {}
+// struct UnsafeSend<T>(T);
+// unsafe impl<T> Send for UnsafeSend<T> {}
