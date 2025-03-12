@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use wry::{
     dpi::{LogicalPosition, LogicalSize, Position},
     http::{self, header::CONTENT_TYPE, Request, Response},
-    Rect, WebContext, WebView, WebViewBuilder,
+    Rect, WebContext, WebView, WebViewBuilder, WebViewExtMacOS,
 };
 
 pub use baseview;
@@ -328,22 +328,29 @@ impl Editor for WebviewEditor {
         let config = self.config.clone();
         let params_changed = self.params_changed.clone();
         let __webview_rc = UnsafeSend(webview_rc.clone());
+        let __new_window = UnsafeSend(new_window.clone());
 
         let window_handle = baseview::Window::open_parented(&parent, options, move |mut window| {
             // Theoretically, this is reparenting! I wonder if it would allow us to
             // preserve the webview between window close/open?
 
-            // let window_ptr = match new_window.as_raw() {
-            //     ::raw_window_handle::RawWindowHandle::AppKit(app_kit_window_handle) => {
-            //         { app_kit_window_handle.ns_view }.cast::<_>() // i cannot believe it worked lol
-            //     }
-            //     _ => todo!(),
-            // };
-            //
-            // webview.reparent(window_ptr.as_ptr()).unwrap();
+            let webview = __webview_rc;
+            let webview = webview.0.borrow().clone().unwrap();
+            let new_window = __new_window;
+            let new_window = new_window.0;
 
-            let webview_rc = __webview_rc;
-            let webview = webview_rc.0.borrow().clone().unwrap();
+            ////
+
+            let window_ptr = match new_window.as_raw() {
+                ::raw_window_handle::RawWindowHandle::AppKit(app_kit_window_handle) => {
+                    { app_kit_window_handle.ns_view }.cast::<_>() // i cannot believe it worked lol
+                }
+                _ => todo!(),
+            };
+
+            webview.reparent(window_ptr.as_ptr()).unwrap();
+
+            ////
 
             let window_handler =
                 WindowHandler { init: config.clone(), context, webview, params_changed };
@@ -507,5 +514,5 @@ fn get_wry_response(
     Response::builder().header(CONTENT_TYPE, mimetype).body(content).map_err(Into::into)
 }
 
-struct UnsafeSend(Rc<RefCell<Option<Rc<WebView>>>>);
-unsafe impl Send for UnsafeSend {}
+struct UnsafeSend<T>(T);
+unsafe impl<T> Send for UnsafeSend<T> {}
