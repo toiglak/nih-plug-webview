@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use wry::{
     dpi::{LogicalPosition, LogicalSize, Position},
     http::{self, header::CONTENT_TYPE, Request, Response},
-    Rect, WebContext, WebView, WebViewBuilder,
+    Rect, WebContext, WebView, WebViewBuilder, WebViewExtMacOS,
 };
 
 pub use baseview;
@@ -242,7 +242,7 @@ impl Editor for WebviewEditor {
 
             let new_window = from_raw_window_handle_0_5_2(window);
 
-            let mut webview_builder = WebViewBuilder::new_as_child(&new_window);
+            let mut webview_builder = WebViewBuilder::new();
 
             // Apply user configuration.
             webview_builder = with_webview_fn.lock().unwrap()(webview_builder);
@@ -252,7 +252,7 @@ impl Editor for WebviewEditor {
 
             let (width, height) = state.size.load();
 
-            let mut web_context = WebContext::new(Some(workdir.clone()));
+            let mut _web_context = WebContext::new(Some(workdir.clone()));
 
             let webview_builder = webview_builder
                 .with_bounds(Rect {
@@ -270,8 +270,8 @@ impl Editor for WebviewEditor {
                         let bytes = BASE64.decode(message.as_bytes()).unwrap();
                         webview_rx_tx.send(Message::Binary(bytes)).ok();
                     }
-                })
-                .with_web_context(&mut web_context);
+                });
+            // .with_web_context(&mut web_context);
 
             let webview_builder = match (*source).clone() {
                 WebviewSource::URL(url) => webview_builder.with_url(url.as_str()),
@@ -279,7 +279,7 @@ impl Editor for WebviewEditor {
                 WebviewSource::DirPath(root) => webview_builder
                     .with_custom_protocol(
                         "wry".to_string(), //
-                        move |request| match get_wry_response(&root, request) {
+                        move |_id, request| match get_wry_response(&root, request) {
                             Ok(r) => r.map(Into::into),
                             Err(e) => http::Response::builder()
                                 .header(CONTENT_TYPE, "text/plain")
@@ -295,7 +295,20 @@ impl Editor for WebviewEditor {
                 }
             };
 
-            let webview = webview_builder.build().expect("Failed to construct webview");
+            let webview =
+                webview_builder.build_as_child(&new_window).expect("Failed to construct webview");
+
+            // Theoretically, this is reparenting! I wonder if it would allow us to
+            // preserve the webview between window close/open?
+
+            // let window_ptr = match new_window.as_raw() {
+            //     ::raw_window_handle::RawWindowHandle::AppKit(app_kit_window_handle) => {
+            //         { app_kit_window_handle.ns_view }.cast::<_>() // i cannot believe it worked lol
+            //     }
+            //     _ => todo!(),
+            // };
+            //
+            // webview.reparent(window_ptr.as_ptr()).unwrap();
 
             let window_handler = WindowHandler {
                 init: config.clone(),

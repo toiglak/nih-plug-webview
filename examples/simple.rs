@@ -41,7 +41,7 @@ impl SimpleEditor {
             state,
             config,
             move |w: wry::WebViewBuilder| {
-                w.with_custom_protocol(protocol.clone(), |req| {
+                w.with_custom_protocol(protocol.clone(), |_id, req| {
                     let path = req.uri().path();
                     println!("Request: {}", path);
                     if path == "/index.html" {

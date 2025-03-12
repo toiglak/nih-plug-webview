@@ -37,6 +37,7 @@ pub fn from_raw_window_handle_0_5_2(old_handle: &impl HasRawWindowHandle) -> Win
             RawWindowHandle::UiKit(UiKitWindowHandle::new(NonNull::new(h.ui_view).unwrap()))
         }
         OldRawWindowHandle::AppKit(ref h) => {
+            println!("AppKit window handle: {h:?}");
             RawWindowHandle::AppKit(AppKitWindowHandle::new(NonNull::new(h.ns_view).unwrap()))
         }
         OldRawWindowHandle::Orbital(ref h) => {
