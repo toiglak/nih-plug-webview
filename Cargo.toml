@@ -21,7 +21,7 @@ raw-window-handle = "0.6.2"
 raw-window-handle-0-5 = { package = "raw-window-handle", version = "0.5.2" }
 serde = ">=1.0"
 wry = "0.50.4"
-tao = "0.32.8"
+log = "0.4"
 
 [dev-dependencies]
 nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "40269e1", features = [

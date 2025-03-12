@@ -12,15 +12,14 @@ use base64::{prelude::BASE64_STANDARD as BASE64, Engine};
 use baseview::{Event, EventStatus, };
 use crossbeam::atomic::AtomicCell;
 use nih_plug::{
-    params::persist::PersistentField,
-    prelude::{Editor, GuiContext, ParamSetter},
+    editor::ParentWindowHandle, params::persist::PersistentField, prelude::{Editor, GuiContext, ParamSetter}
 };
 use raw_window_handle::from_raw_window_handle_0_5_2;
 use serde::{Deserialize, Serialize};
 use wry::{
     dpi::{LogicalPosition, LogicalSize, Position},
     http::{self, header::CONTENT_TYPE, Request, Response},
-    Rect, WebContext, WebView, WebViewBuilder,
+    Rect, WebContext, WebView, WebViewBuilder, WebViewExtMacOS,
 };
 
 pub use baseview;
@@ -182,6 +181,8 @@ struct Init {
 pub struct WebviewEditor {
     config: Arc<Init>,
     params_changed: Arc<AtomicBool>,
+    // TODO: Idk why Editor must be Send, but make UnsafeSend a SafeSend (panic if other thread).
+    webview: UnsafeSend<Rc<RefCell<Option<Rc<WebView>>>>>,
 }
 
 impl WebviewEditor {
@@ -215,6 +216,7 @@ impl WebviewEditor {
                 with_webview_fn: Mutex::new(Box::new(f)),
             }),
             params_changed: Arc::new(AtomicBool::new(false)),
+            webview: UnsafeSend(Rc::new(RefCell::new(None))),
         }
     }
 }
@@ -225,13 +227,34 @@ impl Editor for WebviewEditor {
         parent: nih_plug::prelude::ParentWindowHandle,
         context: Arc<dyn GuiContext>,
     ) -> Box<dyn std::any::Any + Send> {
-        let webview_rc = Rc::new(RefCell::new(<Option<Rc<WebView>>>::None));
-        let config = self.config.clone();
+        log::info!("WebviewEditor::spawn");
+
+        let webview_rc = self.webview.0.clone();
+
+        // If the webview was already created, reuse it.
+        if let Some(webview) = webview_rc.borrow().clone() {
+            let window_ptr = match parent {
+                ParentWindowHandle::AppKitNsView(app_kit_window_handle) => {
+                    app_kit_window_handle .cast::<_>()
+                }
+                _ => todo!(),
+            };
+
+            webview.reparent(window_ptr).unwrap();
+
+            // TODO: build_as_child must do something which gives it focus.
+            // NOTE: Vital doesn't receive the focus, and yet sflap DOES during cold startup!
+            // webview.focus_parent().unwrap();
+            // webview.focus_parent().unwrap();
+
+            return Box::new(EditorHandle { webview });
+        }
 
         //
         // Configure the webview.
 
         // let Init { state, source, editor, workdir, with_webview_fn, .. } = &*config;
+        let config = self.config.clone();
         let (width, height) = config.state.size.load();
         let params_changed = self.params_changed.clone();
 
@@ -336,8 +359,9 @@ impl Editor for WebviewEditor {
 
         let webview =
             webview_builder.build_as_child(&new_window).expect("Failed to construct webview");
-
-        webview_rc.replace(Some(Rc::new(webview)));
+        
+        let webview = Rc::new(webview);
+        webview_rc.replace(Some(webview.clone()));
 
         //// We need on_frame
 
@@ -390,7 +414,7 @@ impl Editor for WebviewEditor {
         //     window_handler
         // });
 
-        return Box::new(EditorHandle { webview: webview_rc });
+        return Box::new(EditorHandle { webview });
     }
 
     fn size(&self) -> (u32, u32) {
@@ -420,7 +444,7 @@ impl Editor for WebviewEditor {
 /// call [`drop`] on it when the window is supposed to be closed.
 struct EditorHandle {
     #[expect(unused)]
-    webview: Rc<RefCell<Option<Rc<WebView>>>>,
+    webview: Rc<WebView>,
 }
 
 unsafe impl Send for EditorHandle {}
@@ -540,5 +564,5 @@ fn get_wry_response(
     Response::builder().header(CONTENT_TYPE, mimetype).body(content).map_err(Into::into)
 }
 
-// struct UnsafeSend<T>(T);
-// unsafe impl<T> Send for UnsafeSend<T> {}
+struct UnsafeSend<T>(T);
+unsafe impl<T> Send for UnsafeSend<T> {}
