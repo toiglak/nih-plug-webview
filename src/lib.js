@@ -15,3 +15,12 @@ window.__NIH_PLUG_WEBVIEW__ = {
     return bytes.buffer;
   },
 };
+
+// Every frame, send postMessage to the main process (simulate `on_frame`, todo:
+// completely remove it).
+function loop() {
+  requestAnimationFrame(loop);
+  window.__NIH_PLUG_WEBVIEW__.postMessage("frame");
+}
+
+loop();

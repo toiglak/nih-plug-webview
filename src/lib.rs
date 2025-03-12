@@ -9,7 +9,7 @@ use std::{
 };
 
 use base64::{prelude::BASE64_STANDARD as BASE64, Engine};
-use baseview::{Event, EventStatus, Size, Window};
+use baseview::{Event, EventStatus, };
 use crossbeam::atomic::AtomicCell;
 use nih_plug::{
     params::persist::PersistentField,
@@ -88,12 +88,11 @@ pub trait EditorHandler: Send + 'static {
     }
 }
 
-pub struct Context<'a, 'b> {
+pub struct Context<'a, > {
     handler: &'a WindowHandler,
-    window: &'a mut Window<'b>,
 }
 
-impl<'a, 'b> Context<'a, 'b> {
+impl<'a, > Context<'a, > {
     /// Send a message to the plugin.
     pub fn send_message(&mut self, message: Message) {
         self.handler.send_message(message);
@@ -104,7 +103,7 @@ impl<'a, 'b> Context<'a, 'b> {
     /// Do note that plugin host may refuse to resize the window, in which case
     /// this method will return `false`.
     pub fn resize_window(&mut self, width: f64, height: f64) -> bool {
-        self.handler.resize(self.window, width, height)
+        self.handler.resize( width, height)
     }
 
     /// Returns `true` if plugin parameters have changed since the last call to this method.
@@ -224,7 +223,7 @@ impl Editor for WebviewEditor {
     fn spawn(
         &self,
         parent: nih_plug::prelude::ParentWindowHandle,
-        _context: Arc<dyn GuiContext>,
+        context: Arc<dyn GuiContext>,
     ) -> Box<dyn std::any::Any + Send> {
         let webview_rc = Rc::new(RefCell::new(<Option<Rc<WebView>>>::None));
         let config = self.config.clone();
@@ -234,6 +233,7 @@ impl Editor for WebviewEditor {
 
         // let Init { state, source, editor, workdir, with_webview_fn, .. } = &*config;
         let (width, height) = config.state.size.load();
+        let params_changed = self.params_changed.clone();
 
         let mut webview_builder = WebViewBuilder::new();
 
@@ -243,7 +243,6 @@ impl Editor for WebviewEditor {
         let mut _web_context = WebContext::new(Some(config.workdir.clone()));
 
         let webview_builder = webview_builder
-
             .with_bounds(Rect {
                 position: Position::Logical(LogicalPosition { x: 0.0, y: 0.0 }),
                 size: wry::dpi::Size::Logical(LogicalSize { width, height }),
@@ -252,11 +251,11 @@ impl Editor for WebviewEditor {
             .with_ipc_handler({
                 let webview_rc = webview_rc.clone();
                 let config = config.clone();
+                let context = context.clone();
                 move |request: Request<String>| {
                     let webview = webview_rc.borrow();
                     let webview: &WebView = webview.as_ref().unwrap();
                     let message = request.into_body();
-
                     let send_message = |message: Message| {
                         match message {
                             Message::Text(text) => {
@@ -274,7 +273,30 @@ impl Editor for WebviewEditor {
                         }
                     };
 
-                    if message.starts_with("text,") {
+                    if message.starts_with("frame") {
+                        
+                        if let Err(err) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let mut editor = config.editor.lock().unwrap();
+                            
+                            let handler = &WindowHandler {
+                                init: config.clone(),
+                                webview: webview_rc.borrow().clone().unwrap(),
+                                context: context.clone(),
+                                params_changed: params_changed.clone(),
+                            };
+                            let mut cx = Context { handler };
+
+                            editor.on_frame(&mut cx);
+                        })) {
+                            // NOTE: We catch panic here, because `baseview` doesn't run from the "main entry
+                            // point", instead it schedules this handler as a task on the main thread. For
+                            // some reason, on macos if you panic from a task the process will be forever
+                            // stuck and you won't be able terminate it until you log out.
+                            eprintln!("{:?}", err);
+                            std::process::exit(1);
+                        }
+
+                    } else if message.starts_with("text,") {
                         let message = message.trim_start_matches("text,");
                         let mut editor = config.editor.lock().unwrap();
                         editor.on_message(&send_message, Message::Text(message.to_string()));
@@ -419,11 +441,11 @@ struct WindowHandler {
 }
 
 impl WindowHandler {
-    fn context<'a, 'b>(&'a self, window: &'a mut Window<'b>) -> Context<'a, 'b> {
-        Context { handler: self, window }
+    fn context<'a, >(&'a self, ) -> Context<'a, > {
+        Context { handler: self }
     }
 
-    fn resize(&self, window: &mut baseview::Window, width: f64, height: f64) -> bool {
+    fn resize(&self,  width: f64, height: f64) -> bool {
         let old = self.init.state.size.swap((width, height));
 
         if !self.context.request_resize() {
@@ -432,7 +454,8 @@ impl WindowHandler {
             return false;
         }
 
-        window.resize(Size { width: width as f64, height: height as f64 });
+        // We may need to reimplement this ourselves.
+        // window.resize(Size { width: width as f64, height: height as f64 });
 
         // FIXME: handle error?
         let _ = self.webview.set_bounds(Rect {
@@ -462,11 +485,10 @@ impl WindowHandler {
 }
 
 impl baseview::WindowHandler for WindowHandler {
-    fn on_frame(&mut self, window: &mut baseview::Window) {
+    fn on_frame(&mut self, _window: &mut baseview::Window) {
         if let Err(err) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut editor = self.init.editor.lock().unwrap();
-            let mut cx = self.context(window);
-
+            let mut cx = self.context();
             editor.on_frame(&mut cx);
         })) {
             // NOTE: We catch panic here, because `baseview` doesn't run from the "main entry
@@ -478,10 +500,10 @@ impl baseview::WindowHandler for WindowHandler {
         }
     }
 
-    fn on_event(&mut self, window: &mut baseview::Window, event: Event) -> EventStatus {
+    fn on_event(&mut self, _window: &mut baseview::Window, event: Event) -> EventStatus {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut editor = self.init.editor.lock().unwrap();
-            let mut cx = self.context(window);
+            let mut cx = self.context();
 
             editor.on_window_event(&mut cx, event)
         })) {
