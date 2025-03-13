@@ -379,9 +379,8 @@ fn configure_webview<'a>(
         WebviewSource::URL(url) => webview_builder.with_url(url.as_str()),
         WebviewSource::HTML(html) => webview_builder.with_html(html),
         WebviewSource::DirPath(root) => webview_builder
-            .with_custom_protocol(
-                "wry".to_string(), //
-                move |_id, request| match get_wry_response(&root, request) {
+            .with_custom_protocol("wry".to_string(), move |_id, request| {
+                match get_wry_response(&root, request) {
                     Ok(r) => r.map(Into::into),
                     Err(e) => http::Response::builder()
                         .header(CONTENT_TYPE, "text/plain")
@@ -389,8 +388,8 @@ fn configure_webview<'a>(
                         .body(e.to_string().as_bytes().to_vec())
                         .unwrap()
                         .map(Into::into),
-                },
-            )
+                }
+            })
             .with_url("wry://localhost"),
         WebviewSource::CustomProtocol { url, protocol } => {
             webview_builder.with_url(format!("{protocol}://localhost/{url}").as_str())
