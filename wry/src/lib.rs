@@ -368,6 +368,7 @@ use android::*;
 
 #[cfg(gtk)]
 pub(crate) mod webkitgtk;
+use objc2_app_kit::NSView;
 /// Re-exported [raw-window-handle](https://docs.rs/raw-window-handle/latest/raw_window_handle/) crate.
 pub use raw_window_handle;
 use raw_window_handle::HasWindowHandle;
@@ -2123,6 +2124,10 @@ pub trait WebViewExtMacOS {
   fn ns_window(&self) -> Retained<NSWindow>;
   /// Attaches this webview to the given NSWindow and removes it from the current one.
   fn reparent(&self, window: *mut NSWindow) -> Result<()>;
+
+  fn reparent_view(&self, window: *mut NSView) -> Result<()>;
+  fn activate(&self) -> Result<()>;
+
   /// Prints with extra options
   fn print_with_options(&self, options: &PrintOptions) -> Result<()>;
   /// Move the window controls to the specified position.
@@ -2149,6 +2154,14 @@ impl WebViewExtMacOS for WebView {
 
   fn reparent(&self, window: *mut NSWindow) -> Result<()> {
     self.webview.reparent(window)
+  }
+
+  fn reparent_view(&self, window: *mut NSView) -> Result<()> {
+    self.webview.reparent_view(window)
+  }
+
+  fn activate(&self) -> Result<()> {
+    self.webview.activate()
   }
 
   fn print_with_options(&self, options: &PrintOptions) -> Result<()> {

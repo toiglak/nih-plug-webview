@@ -990,6 +990,43 @@ r#"Object.defineProperty(window, 'ipc', {
   }
 
   #[cfg(target_os = "macos")]
+  pub(crate) fn reparent_view(&self, content_view: *mut NSView) -> crate::Result<()> {
+    unsafe {
+      let ns_view = content_view.as_ref().unwrap();
+      ns_view
+        .window()
+        .unwrap()
+        .makeFirstResponder(Some(&self.webview));
+
+      // let content_view = (*window).contentView().unwrap();
+    }
+
+    Ok(())
+  }
+
+  #[cfg(target_os = "macos")]
+  pub(crate) fn activate(&self) -> crate::Result<()> {
+    unsafe {
+      let (os_major_version, _, _) = util::operating_system_version();
+      let app = NSApplication::sharedApplication(self.mtm);
+
+      if os_major_version >= 14 {
+        NSApplication::activate(&app);
+      } else {
+        #[allow(deprecated)]
+        NSApplication::activateIgnoringOtherApps(&app, true);
+      }
+
+      // acceptsFirstResponder(&self.webview, true);
+      // self.webview.acceptsFirstResponder();
+      // self.webview.becomeFirstResponder();
+      // self.ns_view.becomeFirstResponder();
+    }
+
+    Ok(())
+  }
+
+  #[cfg(target_os = "macos")]
   pub(crate) fn set_traffic_light_inset(&self, position: dpi::Position) -> crate::Result<()> {
     if let Some(parent_view) = &self.parent_view {
       parent_view.set_traffic_light_inset(&self.webview.window().unwrap(), position);

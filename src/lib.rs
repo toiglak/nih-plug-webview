@@ -245,48 +245,13 @@ impl Editor for WebviewEditor {
                 _ => todo!(),
             };
 
-            // #[cfg(target_os = "macos")]
-            // pub(crate) fn reparent(&self, content_view: *mut NSView) -> crate::Result<()> {
-            //   unsafe {
-            //     let ns_view = content_view.as_ref().unwrap();
-            //     ns_view.addSubview(&self.webview);
-            //     ns_view
-            //       .window()
-            //       .unwrap()
-            //       .makeFirstResponder(Some(&self.webview));
-            //     // let content_view = (*window).contentView().unwrap();
-            //   }
-
-            webview.reparent(window_ptr).unwrap();
+            webview.reparent_view(window_ptr).unwrap();
+            webview.activate().unwrap();
 
             // webview.focus_parent().unwrap();
             // webview.focus_parent().unwrap();
             // webview.evaluate_script("window.focus(); console.log('focus'); document.focus();").unwrap();
 
-            // #[cfg(target_os = "macos")]
-            // pub(crate) fn activate(&self) -> crate::Result<()> {
-            //   unsafe {
-            //     let (os_major_version, _, _) = util::operating_system_version();
-            //     let app = NSApplication::sharedApplication(self.mtm);
-
-            //     if os_major_version >= 14 {
-            //       NSApplication::activate(&app);
-            //     } else {
-            //       #[allow(deprecated)]
-            //       NSApplication::activateIgnoringOtherApps(&app, true);
-            //     }
-
-            //     // acceptsFirstResponder(&self.webview, true);
-            //     // self.webview.acceptsFirstResponder();
-            //     // self.webview.becomeFirstResponder();
-            //     // self.ns_view.becomeFirstResponder();
-            //   }
-
-            //   Ok(())
-            // }
-
-            // Make the first responder, then activate:
-            // webview.activate().unwrap();
             // For some reason, reloading the page fixes keyboard?
             // webview.reload().unwrap();
 
