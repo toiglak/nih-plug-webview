@@ -1,11 +1,8 @@
 use std::{
-    cell::RefCell,
-    path::PathBuf,
-    rc::Rc,
-    sync::{
+    cell::RefCell, path::PathBuf, ptr::NonNull, rc::Rc, sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
-    },
+    }
 };
 
 use base64::{prelude::BASE64_STANDARD as BASE64, Engine};
@@ -14,7 +11,9 @@ use crossbeam::atomic::AtomicCell;
 use nih_plug::{
     editor::ParentWindowHandle, params::persist::PersistentField, prelude::{Editor, GuiContext, ParamSetter}
 };
+use objc2_app_kit::{NSView, NSWindow};
 use raw_window_handle::from_raw_window_handle_0_5_2;
+use ::raw_window_handle::{AppKitWindowHandle, RawWindowHandle, WindowHandle};
 use serde::{Deserialize, Serialize};
 use wry::{
     dpi::{LogicalPosition, LogicalSize, Position},
@@ -228,6 +227,14 @@ impl Editor for WebviewEditor {
         context: Arc<dyn GuiContext>,
     ) -> Box<dyn std::any::Any + Send> {
 
+        let window_ptr = match parent {
+            ParentWindowHandle::AppKitNsView(app_kit_window_handle) => {
+                app_kit_window_handle .cast::<NSView>()
+            }
+            _ => todo!(),
+        };
+
+
         // TODO: Most likely, `parent` provides `ns_view` which has `ns_window` as a parent,
         // unlike baseview... loll
 
@@ -307,7 +314,7 @@ impl Editor for WebviewEditor {
 
             // Okay, so this works in focusing the window, but it doesn't fix the keyboard focus.
             // But we're close now.
-            webview.activate().unwrap();
+            // webview.activate().unwrap();
             // For some reason, reloading the page fixes keyboard?
             // webview.reload().unwrap();
 
@@ -428,10 +435,22 @@ impl Editor for WebviewEditor {
             }
         };
 
+
+
+
         let new_window = from_raw_window_handle_0_5_2(&parent);
 
+        let window = unsafe {
+            let view_ptr = window_ptr.as_ref().unwrap();
+            let ns_window = view_ptr.window().unwrap();
+            let ns_window_ptr = objc2::rc::Retained::<NSWindow>::into_raw(ns_window);
+            let app_kit = RawWindowHandle::AppKit(AppKitWindowHandle::new(NonNull::new(ns_window_ptr.cast()).unwrap()));
+            WindowHandle::borrow_raw(app_kit)
+        };
         let webview =
-            webview_builder.build_as_child(&new_window).expect("Failed to construct webview");
+            webview_builder.build_as_child(&window).expect("Failed to construct webview");
+
+
         
         let webview = Rc::new(webview);
         webview_rc.replace(Some(webview.clone()));

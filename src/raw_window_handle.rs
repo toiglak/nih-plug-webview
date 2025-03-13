@@ -4,10 +4,8 @@ use std::{
 };
 
 use raw_window_handle::{
-    AndroidNdkWindowHandle, AppKitWindowHandle, DrmWindowHandle, GbmWindowHandle,
-    HaikuWindowHandle, OrbitalWindowHandle, RawWindowHandle, UiKitWindowHandle,
-    WaylandWindowHandle, WebWindowHandle, Win32WindowHandle, WinRtWindowHandle, WindowHandle,
-    XcbWindowHandle,
+    AndroidNdkWindowHandle, AppKitWindowHandle, RawWindowHandle, UiKitWindowHandle,
+    WaylandWindowHandle, Win32WindowHandle, WinRtWindowHandle, WindowHandle, XcbWindowHandle,
 };
 use raw_window_handle_0_5::{HasRawWindowHandle, RawWindowHandle as OldRawWindowHandle};
 
@@ -21,6 +19,12 @@ pub fn from_raw_window_handle_0_5_2(old_handle: &impl HasRawWindowHandle) -> Win
     let old_handle = old_handle.raw_window_handle();
 
     let raw = match old_handle {
+        OldRawWindowHandle::AppKit(ref h) => {
+            RawWindowHandle::AppKit(AppKitWindowHandle::new(NonNull::new(h.ns_view).unwrap()))
+        }
+        OldRawWindowHandle::Win32(ref _h) => RawWindowHandle::Win32(Win32WindowHandle::new(
+            NonZeroIsize::new(_h.hwnd as isize).unwrap(),
+        )),
         OldRawWindowHandle::Xlib(ref h) => {
             RawWindowHandle::Xlib(raw_window_handle::XlibWindowHandle::new(h.window))
         }
@@ -29,37 +33,6 @@ pub fn from_raw_window_handle_0_5_2(old_handle: &impl HasRawWindowHandle) -> Win
         }
         OldRawWindowHandle::Wayland(ref h) => {
             RawWindowHandle::Wayland(WaylandWindowHandle::new(NonNull::new(h.surface).unwrap()))
-        }
-        OldRawWindowHandle::AndroidNdk(ref h) => RawWindowHandle::AndroidNdk(
-            AndroidNdkWindowHandle::new(NonNull::new(h.a_native_window).unwrap()),
-        ),
-        OldRawWindowHandle::UiKit(ref h) => {
-            RawWindowHandle::UiKit(UiKitWindowHandle::new(NonNull::new(h.ui_view).unwrap()))
-        }
-        OldRawWindowHandle::AppKit(ref h) => {
-            println!("AppKit window handle: {h:?}");
-            RawWindowHandle::AppKit(AppKitWindowHandle::new(NonNull::new(h.ns_view).unwrap()))
-        }
-        OldRawWindowHandle::Orbital(ref h) => {
-            RawWindowHandle::Orbital(OrbitalWindowHandle::new(NonNull::new(h.window).unwrap()))
-        }
-        OldRawWindowHandle::Drm(ref h) => {
-            RawWindowHandle::Drm(DrmWindowHandle::new(h.plane)) //
-        }
-        OldRawWindowHandle::Gbm(ref h) => {
-            RawWindowHandle::Gbm(GbmWindowHandle::new(NonNull::new(h.gbm_surface).unwrap()))
-        }
-        OldRawWindowHandle::Win32(ref _h) => RawWindowHandle::Win32(Win32WindowHandle::new(
-            NonZeroIsize::new(_h.hwnd as isize).unwrap(),
-        )),
-        OldRawWindowHandle::WinRt(ref h) => {
-            RawWindowHandle::WinRt(WinRtWindowHandle::new(NonNull::new(h.core_window).unwrap()))
-        }
-        OldRawWindowHandle::Web(ref h) => {
-            RawWindowHandle::Web(WebWindowHandle::new(h.id)) //
-        }
-        OldRawWindowHandle::Haiku(ref h) => {
-            RawWindowHandle::Haiku(HaikuWindowHandle::new(NonNull::new(h.b_window).unwrap()))
         }
         _ => unimplemented!("Unsupported window handle type"),
     };
