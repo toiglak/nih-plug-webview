@@ -307,11 +307,12 @@ impl Editor for WebviewEditor {
         let new_window = from_raw_window_handle_0_5_2(&parent);
 
         let webview =
-            webview_builder.build_as_child(&new_window).expect("Failed to construct webview");
+            webview_builder.build_as_child(&new_window).expect("failed to construct webview");
+
+        ////
 
         let webview = Rc::new(webview);
         webview_rc.replace(Some(webview.clone()));
-
         return Box::new(EditorHandle { webview });
     }
 
