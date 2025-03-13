@@ -227,6 +227,10 @@ impl Editor for WebviewEditor {
         parent: nih_plug::prelude::ParentWindowHandle,
         context: Arc<dyn GuiContext>,
     ) -> Box<dyn std::any::Any + Send> {
+
+        // TODO: Most likely, `parent` provides `ns_view` which has `ns_window` as a parent,
+        // unlike baseview... loll
+
         log::info!("WebviewEditor::spawn");
 
         let webview_rc = self.webview.0.clone();
@@ -239,6 +243,18 @@ impl Editor for WebviewEditor {
                 }
                 _ => todo!(),
             };
+
+             // #[cfg(target_os = "macos")]
+            // pub(crate) fn reparent(&self, content_view: *mut NSView) -> crate::Result<()> {
+            //   unsafe {
+            //     let ns_view = content_view.as_ref().unwrap();
+            //     ns_view.addSubview(&self.webview);
+            //     ns_view
+            //       .window()
+            //       .unwrap()
+            //       .makeFirstResponder(Some(&self.webview));
+            //     // let content_view = (*window).contentView().unwrap();
+            //   }
 
             webview.reparent(window_ptr).unwrap();
 
@@ -264,15 +280,43 @@ impl Editor for WebviewEditor {
             // webview.focus_parent().unwrap();
             // webview.evaluate_script("window.focus(); console.log('focus'); document.focus();").unwrap();
 
+
+           
+
+            // #[cfg(target_os = "macos")]
+            // pub(crate) fn activate(&self) -> crate::Result<()> {
+            //   unsafe {
+            //     let (os_major_version, _, _) = util::operating_system_version();
+            //     let app = NSApplication::sharedApplication(self.mtm);
+          
+            //     if os_major_version >= 14 {
+            //       NSApplication::activate(&app);
+            //     } else {
+            //       #[allow(deprecated)]
+            //       NSApplication::activateIgnoringOtherApps(&app, true);
+            //     }
+          
+            //     // acceptsFirstResponder(&self.webview, true);
+            //     // self.webview.acceptsFirstResponder();
+            //     // self.webview.becomeFirstResponder();
+            //     // self.ns_view.becomeFirstResponder();
+            //   }
+          
+            //   Ok(())
+            // }
+
             // Okay, so this works in focusing the window, but it doesn't fix the keyboard focus.
             // But we're close now.
             webview.activate().unwrap();
             // For some reason, reloading the page fixes keyboard?
-            webview.reload().unwrap();
+            // webview.reload().unwrap();
+
+
 
 
             // TODO: Fork wry for real for real.
             // TODO: For now, reloading webview is fine.
+            // TODO: We can also drop in Drop (but we must use weak Rc!!!).
 
             return Box::new(EditorHandle { webview });
         }
