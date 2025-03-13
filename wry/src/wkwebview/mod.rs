@@ -993,6 +993,8 @@ r#"Object.defineProperty(window, 'ipc', {
   pub(crate) fn reparent_view(&self, content_view: *mut NSView) -> crate::Result<()> {
     unsafe {
       let ns_view = content_view.as_ref().unwrap();
+      ns_view.addSubview(&self.webview);
+
       ns_view
         .window()
         .unwrap()
