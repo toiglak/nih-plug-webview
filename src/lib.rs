@@ -16,6 +16,7 @@ use nih_plug::{
     params::persist::PersistentField,
     prelude::{Editor, GuiContext, ParamSetter},
 };
+use objc2_app_kit::NSView;
 use raw_window_handle::from_raw_window_handle_0_5_2;
 use serde::{Deserialize, Serialize};
 use wry::{
@@ -238,26 +239,38 @@ impl Editor for WebviewEditor {
         // If the webview was already created, reuse it.
 
         if let Some(webview) = webview_rc.borrow().clone() {
-            let window_ptr = match parent {
-                ParentWindowHandle::AppKitNsView(app_kit_window_handle) => {
-                    app_kit_window_handle.cast::<_>()
-                }
-                _ => todo!(),
-            };
+            #[allow(unused)]
+            unsafe {
+                let ns_view_ptr = match parent {
+                    ParentWindowHandle::AppKitNsView(app_kit_window_handle) => {
+                        app_kit_window_handle.cast::<NSView>()
+                    }
+                    _ => todo!(),
+                };
+                let ns_view = ns_view_ptr.as_ref().unwrap();
 
-            webview.reparent_view(window_ptr).unwrap();
-            webview.activate().unwrap();
+                //// Obtain ns_window from ns_view
 
-            // webview.focus_parent().unwrap();
-            // webview.focus_parent().unwrap();
-            // webview.evaluate_script("window.focus(); console.log('focus'); document.focus();").unwrap();
+                // For some reason, the second `ns_view` we receive from
+                // `Editor::spawn` has `window()` UNLIKE the first one...
+                //
+                // Try to understand why, or if that's really the case (does the
+                // original ns_view also have window?) — maybe no need to fork.
 
-            // For some reason, reloading the page fixes keyboard?
-            // webview.reload().unwrap();
+                let ns_window = ns_view.window().unwrap();
+                let (ns_window, ns_window_ptr) =
+                    (ns_window.clone(), objc2::rc::Retained::into_raw(ns_window));
 
-            // TODO: For now, reloading webview is fine.
-            // TODO: We can also drop in Drop (but we must use weak Rc!!!).
-            return Box::new(EditorHandle { webview });
+                //// Reparent and focus the window
+
+                webview.reparent(ns_window_ptr).unwrap();
+                // NOTE: This breaks Shift + W — we need to press Shift + W twice.
+                webview.activate().unwrap();
+                // Make first responder.
+                webview.focus().unwrap();
+
+                return Box::new(EditorHandle { webview });
+            }
         }
 
         //
