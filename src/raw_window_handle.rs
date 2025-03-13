@@ -4,8 +4,8 @@ use std::{
 };
 
 use raw_window_handle::{
-    AndroidNdkWindowHandle, AppKitWindowHandle, RawWindowHandle, UiKitWindowHandle,
-    WaylandWindowHandle, Win32WindowHandle, WinRtWindowHandle, WindowHandle, XcbWindowHandle,
+    AppKitWindowHandle, RawWindowHandle, WaylandWindowHandle, Win32WindowHandle, WindowHandle,
+    XcbWindowHandle,
 };
 use raw_window_handle_0_5::{HasRawWindowHandle, RawWindowHandle as OldRawWindowHandle};
 
