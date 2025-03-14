@@ -191,7 +191,6 @@ extern "C" fn start_task(
                 Ok(())
               };
 
-              #[allow(unused)]
               // Perform an upfront validation
               if let Err(e) = validate() {
                 #[cfg(feature = "tracing")]
@@ -305,7 +304,6 @@ extern "C" fn start_task(
               #[cfg(feature = "tracing")]
               let _span = tracing::info_span!("wry::custom_protocol::call_handler").entered();
 
-              #[allow(unused)]
               if let Err(e) = response(
                 task,
                 webview,

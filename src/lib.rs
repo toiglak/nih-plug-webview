@@ -251,40 +251,32 @@ impl Editor for WebviewEditor {
 
         let webview_rc = self.webview.0.clone();
 
-        //
-        // If the webview was already created, reuse it.
+        // //// If the webview was already created, reuse it.
 
-        if let Some(webview) = webview_rc.borrow().clone() {
-            #[allow(unused)]
-            unsafe {
-                let ns_view = as_ns_view(window);
+        // if let Some(webview) = webview_rc.borrow().clone() {
+        //     #[allow(unused)]
+        //     unsafe {
+        //         let ns_view = as_ns_view(window);
 
-                //// Obtain ns_window from ns_view
+        //         //// Obtain ns_window from ns_view
 
-                // For some reason, the second `ns_view` we receive from
-                // `Editor::spawn` has `window()` UNLIKE the first one...
-                //
-                // Try to understand why, or if that's really the case (does the
-                // original ns_view also have window?) — maybe no need to fork.
+        //         let ns_window = ns_view.window().unwrap();
+        //         let (ns_window, ns_window_ptr) =
+        //             (ns_window.clone(), objc2::rc::Retained::into_raw(ns_window));
 
-                let ns_window = ns_view.window().unwrap();
-                let (ns_window, ns_window_ptr) =
-                    (ns_window.clone(), objc2::rc::Retained::into_raw(ns_window));
+        //         //// Reparent and focus the window
 
-                //// Reparent and focus the window
+        //         webview.reparent(ns_window_ptr).unwrap();
+        //         // NOTE: This breaks Shift + W — we need to press Shift + W twice.
+        //         webview.activate().unwrap();
+        //         // Make first responder.
+        //         webview.focus().unwrap();
 
-                webview.reparent(ns_window_ptr).unwrap();
-                // NOTE: This breaks Shift + W — we need to press Shift + W twice.
-                webview.activate().unwrap();
-                // Make first responder.
-                webview.focus().unwrap();
+        //         return Box::new(EditorHandle { webview });
+        //     }
+        // }
 
-                return Box::new(EditorHandle { webview });
-            }
-        }
-
-        //
-        // Configure the webview.
+        //// Create webview
 
         let webview_builder = configure_webview(
             context,
@@ -294,20 +286,8 @@ impl Editor for WebviewEditor {
             self.params_changed.clone(),
         );
 
-        // let new_window = unsafe {
-        //     use ::objc2_app_kit::NSWindow;
-        //     use ::raw_window_handle::{AppKitWindowHandle, RawWindowHandle, WindowHandle};
-        //     use ::std::ptr::NonNull;
-
-        //     let ns_view = as_ns_view(parent);
-        //     let ns_window = ns_view.window().unwrap();
-        //     let ns_window_ptr = objc2::rc::Retained::<NSWindow>::into_raw(ns_window);
-        //     let app_kit = RawWindowHandle::AppKit(AppKitWindowHandle::new(
-        //         NonNull::new(ns_window_ptr.cast()).unwrap(),
-        //     ));
-        //     WindowHandle::borrow_raw(app_kit)
-        // };
-
+        // We must set build_as_child(), because build() assumes to "parent" exists, and
+        // consumes all keyboard events, which we don't want for a plugin.
         let webview = webview_builder.build_as_child(&window).expect("failed to construct webview");
 
         ////

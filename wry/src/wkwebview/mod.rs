@@ -38,7 +38,7 @@ use objc2::{
   AllocAnyThread, DeclaredClass, MainThreadOnly, Message,
 };
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSApplication, NSAutoresizingMaskOptions, NSView};
+use objc2_app_kit::{NSApplication, NSAutoresizingMaskOptions, NSTitlebarSeparatorStyle, NSView};
 #[cfg(target_os = "macos")]
 use objc2_core_foundation::CGSize;
 use objc2_core_foundation::{CGPoint, CGRect};
@@ -320,10 +320,9 @@ impl InnerWebView {
 
       #[cfg(target_os = "macos")]
       let webview = {
-        // let window = ns_view.window().unwrap();
-        // let scale_factor = window.backingScaleFactor();
-        let scale_factor = 1.0;
+        let window = ns_view.window().unwrap();
 
+        let scale_factor = window.backingScaleFactor();
         let (x, y) = attributes
           .bounds
           .map(|b| b.position.to_logical::<f64>(scale_factor))
@@ -492,16 +491,16 @@ impl InnerWebView {
       let proto_ui_delegate = ProtocolObject::from_ref(&*ui_delegate);
       webview.setUIDelegate(Some(proto_ui_delegate));
 
-      // // ns window is required for the print operation
-      // #[cfg(target_os = "macos")]
-      // {
-      //   let ns_window = ns_view.window().unwrap();
-      //   let can_set_titlebar_style =
-      //     ns_window.respondsToSelector(objc2::sel!(setTitlebarSeparatorStyle:));
-      //   if can_set_titlebar_style {
-      //     ns_window.setTitlebarSeparatorStyle(NSTitlebarSeparatorStyle::None);
-      //   }
-      // }
+      // ns window is required for the print operation
+      #[cfg(target_os = "macos")]
+      {
+        let ns_window = ns_view.window().unwrap();
+        let can_set_titlebar_style =
+          ns_window.respondsToSelector(objc2::sel!(setTitlebarSeparatorStyle:));
+        if can_set_titlebar_style {
+          ns_window.setTitlebarSeparatorStyle(NSTitlebarSeparatorStyle::None);
+        }
+      }
 
       let mut w = Self {
         id: webview_id,
@@ -989,6 +988,11 @@ r#"Object.defineProperty(window, 'ipc', {
     Ok(())
   }
 
+  //// Experimenting
+
+  // TODO: There's probably a more "correct" way to reparent_view (if not, we can pull request it).
+  // TODO: There's probably a more "correct" way to "activate" a view.
+
   #[cfg(target_os = "macos")]
   pub(crate) fn reparent_view(&self, content_view: *mut NSView) -> crate::Result<()> {
     unsafe {
@@ -1027,6 +1031,8 @@ r#"Object.defineProperty(window, 'ipc', {
 
     Ok(())
   }
+
+  ////
 
   #[cfg(target_os = "macos")]
   pub(crate) fn set_traffic_light_inset(&self, position: dpi::Position) -> crate::Result<()> {
