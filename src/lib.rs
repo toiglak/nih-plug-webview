@@ -13,11 +13,10 @@ use baseview::{Event, EventStatus};
 use crossbeam::atomic::AtomicCell;
 use nih_plug::{
     params::persist::PersistentField,
-    prelude::{Editor, GuiContext, ParamSetter},
+    prelude::{Editor, GuiContext, ParamSetter, ParentWindowHandle},
 };
 #[cfg(target_os = "macos")]
 use objc2_app_kit::NSView;
-use raw_window_handle::WindowHandle;
 use serde::{Deserialize, Serialize};
 use wry::{
     dpi::{LogicalPosition, LogicalSize, Position},
@@ -231,11 +230,9 @@ impl WebviewEditor {
 impl Editor for WebviewEditor {
     fn spawn(
         &self,
-        handle: nih_plug::prelude::ParentWindowHandle,
+        window: ParentWindowHandle,
         context: Arc<dyn GuiContext>,
     ) -> Box<dyn std::any::Any + Send> {
-        let window = into_window_handle(handle);
-
         // OBSERVATION: When running as a standalone app, `ns_view.window()` is
         // None.
         //
@@ -249,27 +246,32 @@ impl Editor for WebviewEditor {
         // `ns_view.window()`.
         #[cfg(target_os = "macos")]
         unsafe {
-            log::debug!("ns_view: {:?}", handle);
-            let ns_view = as_ns_view(handle);
+            log::debug!("ns_view: {:?}", window);
+            let ns_view = as_ns_view(window);
             log::debug!("ns_view.window: {:?}", ns_view.window());
         };
 
         // let webview_rc = self.webview.0.clone();
-        let webview_rc = Rc::new(RefCell::new(None));
+        let webview_rc: Rc<RefCell<Option<Weak<WebView>>>> = Rc::new(RefCell::new(None));
+        let mut web_context = WebContext::new(Some(self.config.workdir.clone()));
 
         // If the webview was already created, reuse it.
-        // if let Some(webview) = webview_rc.borrow().clone() {
-        //     #[allow(unused)]
-        //     unsafe {
-        //         reparent_webview(&webview, window);
-        //         return Box::new(EditorHandle { webview });
-        //     }
-        // }
+        if let Some(webview) = webview_rc.borrow().clone() {
+            #[allow(unused)]
+            unsafe {
+                let webview = webview.upgrade().unwrap();
+                reparent_webview(webview.clone(), window);
+                return Box::new(EditorHandle { webview, web_context: Rc::new(web_context) });
+            }
+        }
 
         //// Create webview
 
+        let window = into_window_handle(window);
+
         let webview_builder = configure_webview(
             context,
+            &mut web_context,
             webview_rc.clone(),
             self.config.clone(),
             self.config.state.size.load(),
@@ -284,7 +286,8 @@ impl Editor for WebviewEditor {
 
         let webview = Rc::new(webview);
         webview_rc.replace(Some(Rc::<WebView>::downgrade(&webview)));
-        return Box::new(EditorHandle { webview });
+        // TODO: Correctly preserve WebContext alongside WebView, if reparenting.
+        return Box::new(EditorHandle { webview, web_context: Rc::new(web_context) });
     }
 
     fn size(&self) -> (u32, u32) {
@@ -340,36 +343,43 @@ unsafe fn reparent_webview(webview: &Rc<WebView>, window: WindowHandle) {
 
 #[allow(unused)]
 #[cfg(target_os = "windows")]
-unsafe fn reparent_webview(_webview: &Rc<WebView>, _window: WindowHandle) {
-    // TODO: Implement Windows-specific reparenting
+unsafe fn reparent_webview(webview: Rc<WebView>, handle: ParentWindowHandle) {
+    use wry::WebViewExtWindows;
+
+    let hwnd = match handle {
+        ParentWindowHandle::Win32Hwnd(hwnd) => hwnd,
+        _ => panic!("Expected a Win32 window handle"),
+    };
+
+    // TODO: Handle reparenting gracefully.
+    webview.reparent(hwnd as isize).unwrap();
 }
 
 #[allow(unused)]
 #[cfg(target_os = "linux")]
-unsafe fn reparent_webview(_webview: &Rc<WebView>, _window: WindowHandle) {
+unsafe fn reparent_webview(_webview: Rc<WebView>, _window: WindowHandle) {
     // TODO: Implement Linux-specific reparenting
 }
 
 #[allow(unused)]
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-unsafe fn reparent_webview(_webview: &Rc<WebView>, _window: WindowHandle) {
+unsafe fn reparent_webview(_webview: Rc<WebView>, _window: WindowHandle) {
     // Fallback for unsupported platforms
     log::warn!("Webview reparenting not implemented for this platform");
 }
 
 fn configure_webview<'a>(
     context: Arc<dyn GuiContext>,
+    web_context: &'a mut WebContext,
     webview_rc: Rc<RefCell<Option<Weak<WebView>>>>,
     config: Arc<Init>,
     (width, height): (f64, f64),
     params_changed: Arc<AtomicBool>,
 ) -> WebViewBuilder<'a> {
-    let mut webview_builder = WebViewBuilder::new();
+    let mut webview_builder = WebViewBuilder::with_web_context(web_context);
 
     // Apply user configuration.
     webview_builder = config.with_webview_fn.lock().unwrap()(webview_builder);
-
-    let mut _web_context = WebContext::new(Some(config.workdir.clone()));
 
     let ipc_handler = {
         let webview_rc = webview_rc.clone();
@@ -385,8 +395,8 @@ fn configure_webview<'a>(
     };
 
     let webview_builder = webview_builder
-        .with_accept_first_mouse(true)
         .with_focused(true)
+        .with_accept_first_mouse(true)
         .with_bounds(Rect {
             position: Position::Logical(LogicalPosition { x: 0.0, y: 0.0 }),
             size: wry::dpi::Size::Logical(LogicalSize { width, height }),
@@ -415,6 +425,7 @@ fn configure_webview<'a>(
             webview_builder.with_url(format!("{protocol}://localhost/{url}").as_str())
         }
     };
+
     webview_builder
 }
 
@@ -479,6 +490,8 @@ fn ipc_handler(
 struct EditorHandle {
     #[expect(unused)]
     webview: Rc<WebView>,
+    #[expect(unused)]
+    web_context: Rc<WebContext>,
 }
 
 unsafe impl Send for EditorHandle {}
