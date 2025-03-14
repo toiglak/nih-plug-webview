@@ -286,8 +286,8 @@ impl Editor for WebviewEditor {
             self.params_changed.clone(),
         );
 
-        // We must set build_as_child(), because build() assumes to "parent" exists, and
-        // consumes all keyboard events, which we don't want for a plugin.
+        // We must use build_as_child(), because, unlike build(), it assumes that "parent"
+        // exists and it doesn't consume all keyboard events.
         let webview = webview_builder.build_as_child(&window).expect("failed to construct webview");
 
         ////
