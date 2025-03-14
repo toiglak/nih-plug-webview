@@ -8,7 +8,6 @@ use std::{
     },
 };
 
-use ::raw_window_handle::{RawWindowHandle, WindowHandle};
 use base64::{prelude::BASE64_STANDARD as BASE64, Engine};
 use baseview::{Event, EventStatus};
 use crossbeam::atomic::AtomicCell;
@@ -16,8 +15,9 @@ use nih_plug::{
     params::persist::PersistentField,
     prelude::{Editor, GuiContext, ParamSetter},
 };
+#[cfg(target_os = "macos")]
 use objc2_app_kit::NSView;
-use raw_window_handle::from_raw_window_handle_0_5_2;
+use raw_window_handle::WindowHandle;
 use serde::{Deserialize, Serialize};
 use wry::{
     dpi::{LogicalPosition, LogicalSize, Position},
@@ -25,11 +25,13 @@ use wry::{
     Rect, WebContext, WebView, WebViewBuilder,
 };
 
+use self::window_handle::into_window_handle;
+
 pub use baseview;
 pub use keyboard_types;
 pub use wry;
 
-mod raw_window_handle;
+mod window_handle;
 
 const PLUGIN_OBJ: &str = "window.__NIH_PLUG_WEBVIEW__";
 
@@ -229,10 +231,10 @@ impl WebviewEditor {
 impl Editor for WebviewEditor {
     fn spawn(
         &self,
-        window: nih_plug::prelude::ParentWindowHandle,
+        handle: nih_plug::prelude::ParentWindowHandle,
         context: Arc<dyn GuiContext>,
     ) -> Box<dyn std::any::Any + Send> {
-        let window = from_raw_window_handle_0_5_2(&window);
+        let window = into_window_handle(handle);
 
         // OBSERVATION: When running as a standalone app, `ns_view.window()` is
         // None.
@@ -245,36 +247,21 @@ impl Editor for WebviewEditor {
         // Maybe we could assume that there's ALWAYS a `ns_window`, it's just
         // sometimes accessbile directly from `ns_view` and sometimes from
         // `ns_view.window()`.
+        #[cfg(target_os = "macos")]
         unsafe {
-            log::debug!("ns_view: {:?}", window);
-            let ns_view = as_ns_view(window);
+            log::debug!("ns_view: {:?}", handle);
+            let ns_view = as_ns_view(handle);
             log::debug!("ns_view.window: {:?}", ns_view.window());
         };
 
         // let webview_rc = self.webview.0.clone();
         let webview_rc = Rc::new(RefCell::new(None));
 
-        // //// If the webview was already created, reuse it.
-
+        // If the webview was already created, reuse it.
         // if let Some(webview) = webview_rc.borrow().clone() {
         //     #[allow(unused)]
         //     unsafe {
-        //         let ns_view = as_ns_view(window);
-
-        //         //// Obtain ns_window from ns_view
-
-        //         let ns_window = ns_view.window().unwrap();
-        //         let (ns_window, ns_window_ptr) =
-        //             (ns_window.clone(), objc2::rc::Retained::into_raw(ns_window));
-
-        //         //// Reparent and focus the window
-
-        //         webview.reparent(ns_window_ptr).unwrap();
-        //         // NOTE: This breaks Shift + W — we need to press Shift + W twice.
-        //         webview.activate().unwrap();
-        //         // Make first responder.
-        //         webview.focus().unwrap();
-
+        //         reparent_webview(&webview, window);
         //         return Box::new(EditorHandle { webview });
         //     }
         // }
@@ -323,6 +310,7 @@ impl Editor for WebviewEditor {
     }
 }
 
+#[cfg(target_os = "macos")]
 unsafe fn as_ns_view<'a>(parent: WindowHandle) -> &'a NSView {
     let ns_view_ptr = match parent.as_raw() {
         RawWindowHandle::AppKit(app_kit_window_handle) => {
@@ -331,6 +319,42 @@ unsafe fn as_ns_view<'a>(parent: WindowHandle) -> &'a NSView {
         _ => panic!(),
     };
     ns_view_ptr.as_ptr().as_ref().unwrap()
+}
+
+#[allow(unused)]
+#[cfg(target_os = "macos")]
+unsafe fn reparent_webview(webview: &Rc<WebView>, window: WindowHandle) {
+    let ns_view = as_ns_view(window);
+
+    // Obtain ns_window from ns_view
+    let ns_window = ns_view.window().unwrap();
+    let (ns_window, ns_window_ptr) = (ns_window.clone(), objc2::rc::Retained::into_raw(ns_window));
+
+    // Reparent and focus the window
+    webview.reparent(ns_window_ptr).unwrap();
+    // NOTE: This breaks Shift + W — we need to press Shift + W twice.
+    webview.activate().unwrap();
+    // Make first responder.
+    webview.focus().unwrap();
+}
+
+#[allow(unused)]
+#[cfg(target_os = "windows")]
+unsafe fn reparent_webview(_webview: &Rc<WebView>, _window: WindowHandle) {
+    // TODO: Implement Windows-specific reparenting
+}
+
+#[allow(unused)]
+#[cfg(target_os = "linux")]
+unsafe fn reparent_webview(_webview: &Rc<WebView>, _window: WindowHandle) {
+    // TODO: Implement Linux-specific reparenting
+}
+
+#[allow(unused)]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+unsafe fn reparent_webview(_webview: &Rc<WebView>, _window: WindowHandle) {
+    // Fallback for unsupported platforms
+    log::warn!("Webview reparenting not implemented for this platform");
 }
 
 fn configure_webview<'a>(

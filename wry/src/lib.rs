@@ -368,7 +368,6 @@ use android::*;
 
 #[cfg(gtk)]
 pub(crate) mod webkitgtk;
-use objc2_app_kit::NSView;
 /// Re-exported [raw-window-handle](https://docs.rs/raw-window-handle/latest/raw_window_handle/) crate.
 pub use raw_window_handle;
 use raw_window_handle::HasWindowHandle;
@@ -377,6 +376,8 @@ use webkitgtk::*;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 use objc2::rc::Retained;
+#[cfg(target_os = "macos")]
+use objc2_app_kit::NSView;
 #[cfg(target_os = "macos")]
 use objc2_app_kit::NSWindow;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
