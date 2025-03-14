@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     path::PathBuf,
-    rc::{Rc, Weak},
+    rc::Rc,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -18,6 +18,7 @@ use nih_plug::{
 #[cfg(target_os = "macos")]
 use objc2_app_kit::NSView;
 use serde::{Deserialize, Serialize};
+use windows::Win32::Foundation::HWND;
 use wry::{
     dpi::{LogicalPosition, LogicalSize, Position},
     http::{self, header::CONTENT_TYPE, Request, Response},
@@ -185,10 +186,16 @@ struct Init {
 pub struct WebviewEditor {
     config: Arc<Init>,
     params_changed: Arc<AtomicBool>,
-    // TODO: Use it for `reparent` in the future.
     // TODO: Idk why Editor must be Send, but make UnsafeSend a SafeSend (panic if other thread).
+    webview: UnsafeSend<Rc<RefCell<Option<WebviewHandle>>>>,
+}
+
+struct WebviewHandle {
+    webview: Rc<WebView>,
     #[expect(unused)]
-    webview: UnsafeSend<Rc<RefCell<Option<Weak<WebView>>>>>,
+    web_context: Rc<WebContext>,
+    #[cfg(target_os = "windows")]
+    temp_hwnd: Option<HWND>,
 }
 
 impl WebviewEditor {
@@ -251,17 +258,14 @@ impl Editor for WebviewEditor {
             log::debug!("ns_view.window: {:?}", ns_view.window());
         };
 
-        // let webview_rc = self.webview.0.clone();
-        let webview_rc: Rc<RefCell<Option<Weak<WebView>>>> = Rc::new(RefCell::new(None));
-        let mut web_context = WebContext::new(Some(self.config.workdir.clone()));
+        let webview_handle = self.webview.0.clone();
 
         // If the webview was already created, reuse it.
-        if let Some(webview) = webview_rc.borrow().clone() {
+        if let Some(handle) = webview_handle.borrow().as_ref() {
             #[allow(unused)]
             unsafe {
-                let webview = webview.upgrade().unwrap();
-                reparent_webview(webview.clone(), window);
-                return Box::new(EditorHandle { webview, web_context: Rc::new(web_context) });
+                reparent_webview(handle.webview.clone(), window);
+                return Box::new(EditorHandle { webview_handle: webview_handle.clone() });
             }
         }
 
@@ -269,10 +273,12 @@ impl Editor for WebviewEditor {
 
         let window = into_window_handle(window);
 
+        let mut web_context = WebContext::new(Some(self.config.workdir.clone()));
+
         let webview_builder = configure_webview(
             context,
             &mut web_context,
-            webview_rc.clone(),
+            webview_handle.clone(),
             self.config.clone(),
             self.config.state.size.load(),
             self.params_changed.clone(),
@@ -284,10 +290,14 @@ impl Editor for WebviewEditor {
 
         ////
 
-        let webview = Rc::new(webview);
-        webview_rc.replace(Some(Rc::<WebView>::downgrade(&webview)));
-        // TODO: Correctly preserve WebContext alongside WebView, if reparenting.
-        return Box::new(EditorHandle { webview, web_context: Rc::new(web_context) });
+        webview_handle.replace(Some(WebviewHandle {
+            webview: Rc::new(webview).clone(),
+            web_context: Rc::new(web_context),
+            #[cfg(target_os = "windows")]
+            temp_hwnd: None,
+        }));
+
+        return Box::new(EditorHandle { webview_handle: webview_handle.clone() });
     }
 
     fn size(&self) -> (u32, u32) {
@@ -371,7 +381,7 @@ unsafe fn reparent_webview(_webview: Rc<WebView>, _window: WindowHandle) {
 fn configure_webview<'a>(
     context: Arc<dyn GuiContext>,
     web_context: &'a mut WebContext,
-    webview_rc: Rc<RefCell<Option<Weak<WebView>>>>,
+    webview_handle: Rc<RefCell<Option<WebviewHandle>>>,
     config: Arc<Init>,
     (width, height): (f64, f64),
     params_changed: Arc<AtomicBool>,
@@ -382,12 +392,12 @@ fn configure_webview<'a>(
     webview_builder = config.with_webview_fn.lock().unwrap()(webview_builder);
 
     let ipc_handler = {
-        let webview_rc = webview_rc.clone();
+        let webview_handle = Rc::downgrade(&webview_handle);
         let config = config.clone();
         let context = context.clone();
         move |request: Request<String>| {
-            let webview = webview_rc.borrow();
-            let webview = webview.as_ref().unwrap().upgrade().unwrap();
+            let webview_handle = webview_handle.upgrade().unwrap();
+            let webview = webview_handle.borrow().as_ref().unwrap().webview.clone();
             let config = config.clone();
             let context = context.clone();
             ipc_handler(params_changed.clone(), webview, config, context, request);
@@ -488,16 +498,60 @@ fn ipc_handler(
 /// A handle to the editor window, returned from [`Editor::spawn`]. Host will
 /// call [`drop`] on it when the window is supposed to be closed.
 struct EditorHandle {
-    #[expect(unused)]
-    webview: Rc<WebView>,
-    #[expect(unused)]
-    web_context: Rc<WebContext>,
+    webview_handle: Rc<RefCell<Option<WebviewHandle>>>,
 }
 
 unsafe impl Send for EditorHandle {}
 
 impl Drop for EditorHandle {
-    fn drop(&mut self) {}
+    fn drop(&mut self) {
+        #[cfg(target_os = "windows")]
+        {
+            use windows::{
+                core::PCWSTR,
+                Win32::UI::WindowsAndMessaging::{
+                    CreateWindowExW, WS_DISABLED, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+                },
+            };
+            use wry::WebViewExtWindows;
+
+            let mut handle = self.webview_handle.borrow_mut();
+            // TODO: Consider moving this to ::spawn, that way we can avoid an Option<HWND>
+            let handle = handle.as_mut().unwrap();
+
+            let temp_window = match handle.temp_hwnd {
+                Some(hwnd) => hwnd,
+                None => {
+                    let hwnd = unsafe {
+                        // Create an invisible window to host the webview
+                        let class_name = windows::core::w!("STATIC");
+                        CreateWindowExW(
+                            WS_EX_TOOLWINDOW, // Extended style (tool window has no taskbar presence)
+                            PCWSTR(class_name.as_ptr()),
+                            PCWSTR::null(),              // Window title
+                            WS_OVERLAPPED | WS_DISABLED, // Window style (disabled and not visible)
+                            0,
+                            0,
+                            0,
+                            0,
+                            None,
+                            None,
+                            None,
+                            None,
+                        )
+                        .unwrap()
+                    };
+                    // Store it for the next time
+                    handle.temp_hwnd = Some(hwnd);
+                    hwnd
+                }
+            };
+
+            // Reparent the webview to our temporary invisible window
+            let webview = handle.webview.clone();
+            webview.reparent(temp_window.0 as isize).expect("failed to reparent webview");
+        }
+    }
 }
 
 /// This structure manages the editor window's event loop.
