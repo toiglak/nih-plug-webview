@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     path::PathBuf,
-    rc::Rc,
+    rc::{Rc, Weak},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use wry::{
     dpi::{LogicalPosition, LogicalSize, Position},
     http::{self, header::CONTENT_TYPE, Request, Response},
-    Rect, WebContext, WebView, WebViewBuilder, WebViewExtMacOS,
+    Rect, WebContext, WebView, WebViewBuilder,
 };
 
 pub use baseview;
@@ -184,8 +184,10 @@ struct Init {
 pub struct WebviewEditor {
     config: Arc<Init>,
     params_changed: Arc<AtomicBool>,
+    // TODO: Use it for `reparent` in the future.
     // TODO: Idk why Editor must be Send, but make UnsafeSend a SafeSend (panic if other thread).
-    webview: UnsafeSend<Rc<RefCell<Option<Rc<WebView>>>>>,
+    #[expect(unused)]
+    webview: UnsafeSend<Rc<RefCell<Option<Weak<WebView>>>>>,
 }
 
 impl WebviewEditor {
@@ -249,7 +251,8 @@ impl Editor for WebviewEditor {
             log::debug!("ns_view.window: {:?}", ns_view.window());
         };
 
-        let webview_rc = self.webview.0.clone();
+        // let webview_rc = self.webview.0.clone();
+        let webview_rc = Rc::new(RefCell::new(None));
 
         // //// If the webview was already created, reuse it.
 
@@ -293,7 +296,7 @@ impl Editor for WebviewEditor {
         ////
 
         let webview = Rc::new(webview);
-        webview_rc.replace(Some(webview.clone()));
+        webview_rc.replace(Some(Rc::<WebView>::downgrade(&webview)));
         return Box::new(EditorHandle { webview });
     }
 
@@ -332,7 +335,7 @@ unsafe fn as_ns_view<'a>(parent: WindowHandle) -> &'a NSView {
 
 fn configure_webview<'a>(
     context: Arc<dyn GuiContext>,
-    webview_rc: Rc<RefCell<Option<Rc<WebView>>>>,
+    webview_rc: Rc<RefCell<Option<Weak<WebView>>>>,
     config: Arc<Init>,
     (width, height): (f64, f64),
     params_changed: Arc<AtomicBool>,
@@ -349,10 +352,11 @@ fn configure_webview<'a>(
         let config = config.clone();
         let context = context.clone();
         move |request: Request<String>| {
-            let webview_rc = webview_rc.clone();
+            let webview = webview_rc.borrow();
+            let webview = webview.as_ref().unwrap().upgrade().unwrap();
             let config = config.clone();
             let context = context.clone();
-            ipc_handler(params_changed.clone(), webview_rc, config, context, request);
+            ipc_handler(params_changed.clone(), webview, config, context, request);
         }
     };
 
@@ -392,14 +396,11 @@ fn configure_webview<'a>(
 
 fn ipc_handler(
     params_changed: Arc<AtomicBool>,
-    webview_rc: Rc<RefCell<Option<Rc<WebView>>>>,
+    webview: Rc<WebView>,
     config: Arc<Init>,
     context: Arc<dyn GuiContext>,
     request: Request<String>,
 ) {
-    let webview = webview_rc.borrow();
-    let webview: &WebView = webview.as_ref().unwrap();
-
     let message = request.into_body();
 
     let send_message = |message: Message| match message {
@@ -422,7 +423,7 @@ fn ipc_handler(
 
             let handler = &WindowHandler {
                 init: config.clone(),
-                webview: webview_rc.borrow().clone().unwrap(),
+                webview: webview.clone(),
                 context: context.clone(),
                 params_changed: params_changed.clone(),
             };
@@ -452,17 +453,13 @@ fn ipc_handler(
 /// A handle to the editor window, returned from [`Editor::spawn`]. Host will
 /// call [`drop`] on it when the window is supposed to be closed.
 struct EditorHandle {
-    #[expect(unused)]
     webview: Rc<WebView>,
 }
 
 unsafe impl Send for EditorHandle {}
 
 impl Drop for EditorHandle {
-    fn drop(&mut self) {
-        // TODO: Consider notifying the plugin that the window was closed.
-        // self.window_handle.close();
-    }
+    fn drop(&mut self) {}
 }
 
 /// This structure manages the editor window's event loop.
