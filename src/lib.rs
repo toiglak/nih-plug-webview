@@ -227,11 +227,25 @@ impl WebviewEditor {
 impl Editor for WebviewEditor {
     fn spawn(
         &self,
-        parent: nih_plug::prelude::ParentWindowHandle,
+        window: nih_plug::prelude::ParentWindowHandle,
         context: Arc<dyn GuiContext>,
     ) -> Box<dyn std::any::Any + Send> {
-        // TODO: Most likely, `parent` provides `ns_view` which has `ns_window` as a parent,
-        // unlike baseview... loll
+        // OBSERVATION: When running as a standalone app, `ns_view.window()` is
+        // None.
+        //
+        // Perhaps this is what happens: When running as a standalone app `window`
+        // IS the `ns_window`, because that's what nih_plug provides it with.
+        // However, when running in Bitwig, `window` is a `ns_view`, which is a
+        // child of the `ns_window`, which is why need to call `window()` on it.
+        //
+        // Maybe we could assume that there's ALWAYS a `ns_window`, it's just
+        // sometimes accessbile directly from `ns_view` and sometimes from
+        // `ns_view.window()`.
+        unsafe {
+            log::debug!("ns_view: {:?}", window);
+            let ns_view = as_ns_view(window);
+            log::debug!("ns_view.window: {:?}", ns_view.window());
+        };
 
         let webview_rc = self.webview.0.clone();
 
@@ -241,13 +255,7 @@ impl Editor for WebviewEditor {
         if let Some(webview) = webview_rc.borrow().clone() {
             #[allow(unused)]
             unsafe {
-                let ns_view_ptr = match parent {
-                    ParentWindowHandle::AppKitNsView(app_kit_window_handle) => {
-                        app_kit_window_handle.cast::<NSView>()
-                    }
-                    _ => todo!(),
-                };
-                let ns_view = ns_view_ptr.as_ref().unwrap();
+                let ns_view = as_ns_view(window);
 
                 //// Obtain ns_window from ns_view
 
@@ -285,26 +293,20 @@ impl Editor for WebviewEditor {
         );
 
         // let new_window = unsafe {
-        //     use ::objc2_app_kit::{NSView, NSWindow};
+        //     use ::objc2_app_kit::NSWindow;
         //     use ::raw_window_handle::{AppKitWindowHandle, RawWindowHandle, WindowHandle};
         //     use ::std::ptr::NonNull;
 
-        //     let ns_view = match parent {
-        //         ParentWindowHandle::AppKitNsView(app_kit_window_handle) => {
-        //             app_kit_window_handle.cast::<NSView>()
-        //         }
-        //         _ => todo!(),
-        //     };
-        //     let ns_view = ns_view.as_ref().unwrap();
+        //     let ns_view = as_ns_view(parent);
         //     let ns_window = ns_view.window().unwrap();
         //     let ns_window_ptr = objc2::rc::Retained::<NSWindow>::into_raw(ns_window);
         //     let app_kit = RawWindowHandle::AppKit(AppKitWindowHandle::new(
         //         NonNull::new(ns_window_ptr.cast()).unwrap(),
         //     ));
         //     WindowHandle::borrow_raw(app_kit)
-        // }; //
+        // };
 
-        let new_window = from_raw_window_handle_0_5_2(&parent);
+        let new_window = from_raw_window_handle_0_5_2(&window);
 
         let webview =
             webview_builder.build_as_child(&new_window).expect("failed to construct webview");
@@ -337,6 +339,17 @@ impl Editor for WebviewEditor {
     fn param_modulation_changed(&self, _id: &str, _modulation_offset: f32) {
         self.params_changed.store(true, Ordering::SeqCst);
     }
+}
+
+unsafe fn as_ns_view<'a>(parent: ParentWindowHandle) -> &'a NSView {
+    let ns_view_ptr = match parent {
+        ParentWindowHandle::AppKitNsView(app_kit_window_handle) => {
+            app_kit_window_handle.cast::<NSView>()
+        }
+        _ => panic!(),
+    };
+    let ns_view = ns_view_ptr.as_ref().unwrap();
+    ns_view
 }
 
 fn configure_webview<'a>(
