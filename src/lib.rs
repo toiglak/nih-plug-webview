@@ -453,6 +453,7 @@ fn ipc_handler(
 /// A handle to the editor window, returned from [`Editor::spawn`]. Host will
 /// call [`drop`] on it when the window is supposed to be closed.
 struct EditorHandle {
+    #[expect(unused)]
     webview: Rc<WebView>,
 }
 
