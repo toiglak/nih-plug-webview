@@ -8,11 +8,11 @@ use std::{
     },
 };
 
+use ::raw_window_handle::{RawWindowHandle, WindowHandle};
 use base64::{prelude::BASE64_STANDARD as BASE64, Engine};
 use baseview::{Event, EventStatus};
 use crossbeam::atomic::AtomicCell;
 use nih_plug::{
-    editor::ParentWindowHandle,
     params::persist::PersistentField,
     prelude::{Editor, GuiContext, ParamSetter},
 };
@@ -230,6 +230,8 @@ impl Editor for WebviewEditor {
         window: nih_plug::prelude::ParentWindowHandle,
         context: Arc<dyn GuiContext>,
     ) -> Box<dyn std::any::Any + Send> {
+        let window = from_raw_window_handle_0_5_2(&window);
+
         // OBSERVATION: When running as a standalone app, `ns_view.window()` is
         // None.
         //
@@ -306,10 +308,7 @@ impl Editor for WebviewEditor {
         //     WindowHandle::borrow_raw(app_kit)
         // };
 
-        let new_window = from_raw_window_handle_0_5_2(&window);
-
-        let webview =
-            webview_builder.build_as_child(&new_window).expect("failed to construct webview");
+        let webview = webview_builder.build_as_child(&window).expect("failed to construct webview");
 
         ////
 
@@ -341,15 +340,14 @@ impl Editor for WebviewEditor {
     }
 }
 
-unsafe fn as_ns_view<'a>(parent: ParentWindowHandle) -> &'a NSView {
-    let ns_view_ptr = match parent {
-        ParentWindowHandle::AppKitNsView(app_kit_window_handle) => {
-            app_kit_window_handle.cast::<NSView>()
+unsafe fn as_ns_view<'a>(parent: WindowHandle) -> &'a NSView {
+    let ns_view_ptr = match parent.as_raw() {
+        RawWindowHandle::AppKit(app_kit_window_handle) => {
+            app_kit_window_handle.ns_view.cast::<NSView>()
         }
         _ => panic!(),
     };
-    let ns_view = ns_view_ptr.as_ref().unwrap();
-    ns_view
+    ns_view_ptr.as_ptr().as_ref().unwrap()
 }
 
 fn configure_webview<'a>(

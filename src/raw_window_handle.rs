@@ -15,7 +15,7 @@ use raw_window_handle_0_5::{HasRawWindowHandle, RawWindowHandle as OldRawWindowH
 // `window` method returns null (correctly). I also tried compiling for Windows and the
 // upgraded wry worked just fine.
 
-pub fn from_raw_window_handle_0_5_2(old_handle: &impl HasRawWindowHandle) -> WindowHandle<'static> {
+pub fn from_raw_window_handle_0_5_2<'a>(old_handle: &impl HasRawWindowHandle) -> WindowHandle<'a> {
     let old_handle = old_handle.raw_window_handle();
 
     let raw = match old_handle {
