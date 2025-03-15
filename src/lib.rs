@@ -413,7 +413,6 @@ fn configure_webview<'a>(
         })
         .with_initialization_script(include_str!("lib.js"))
         .with_ipc_handler(ipc_handler);
-    // .with_web_context(&mut web_context);
 
     let webview_builder = match config.source.clone() {
         WebviewSource::URL(url) => webview_builder.with_url(url.as_str()),
