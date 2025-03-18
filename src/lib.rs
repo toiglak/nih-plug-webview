@@ -9,7 +9,6 @@ use std::{
 };
 
 use base64::{prelude::BASE64_STANDARD as BASE64, Engine};
-use baseview::{Event, EventStatus};
 use crossbeam::atomic::AtomicCell;
 use nih_plug::{
     params::persist::PersistentField,
@@ -25,8 +24,6 @@ use wry::{
 
 use self::window_handle::into_window_handle;
 
-pub use baseview;
-pub use keyboard_types;
 pub use wry;
 
 mod reparent;
@@ -85,10 +82,6 @@ pub trait EditorHandler: Send + 'static {
     fn init(&mut self, cx: &mut Context);
     fn on_frame(&mut self, cx: &mut Context);
     fn on_message(&mut self, send_message: &dyn Fn(Message), message: Message);
-    fn on_window_event(&mut self, cx: &mut Context, event: Event) -> EventStatus {
-        let _ = (cx, event);
-        EventStatus::Ignored
-    }
 }
 
 pub struct Context<'a> {
@@ -450,10 +443,6 @@ struct WindowHandler {
 }
 
 impl WindowHandler {
-    fn context<'a>(&'a self) -> Context<'a> {
-        Context { handler: self }
-    }
-
     fn resize(&self, width: f64, height: f64) -> bool {
         let old = self.init.state.size.swap((width, height));
 
@@ -488,42 +477,6 @@ impl WindowHandler {
                     "{PLUGIN_OBJ}.onmessage(`binary`, {PLUGIN_OBJ}.decodeBase64(`{bytes}`));"
                 );
                 self.webview.evaluate_script(&script).ok();
-            }
-        }
-    }
-}
-
-impl baseview::WindowHandler for WindowHandler {
-    fn on_frame(&mut self, _window: &mut baseview::Window) {
-        if let Err(err) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut editor = self.init.editor.lock().unwrap();
-            let mut cx = self.context();
-            editor.on_frame(&mut cx);
-        })) {
-            // NOTE: We catch panic here, because `baseview` doesn't run from the "main entry
-            // point", instead it schedules this handler as a task on the main thread. For
-            // some reason, on macos if you panic from a task the process will be forever
-            // stuck and you won't be able terminate it until you log out.
-            eprintln!("{:?}", err);
-            std::process::exit(1);
-        }
-    }
-
-    fn on_event(&mut self, _window: &mut baseview::Window, event: Event) -> EventStatus {
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut editor = self.init.editor.lock().unwrap();
-            let mut cx = self.context();
-
-            editor.on_window_event(&mut cx, event)
-        })) {
-            Ok(status) => status,
-            Err(err) => {
-                // NOTE: We catch panic here, because `baseview` doesn't run from the "main entry
-                // point", instead it schedules this handler as a task on the main thread. For
-                // some reason, on macos if you panic from a task the process will be forever
-                // stuck and you won't be able terminate it until you log out.
-                eprintln!("{:?}", err);
-                std::process::exit(1);
             }
         }
     }
