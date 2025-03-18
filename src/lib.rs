@@ -1,20 +1,21 @@
 use std::{
+    cell::RefCell,
     path::PathBuf,
+    rc::Rc,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::{self},
         Arc, Mutex,
     },
 };
 
 use base64::{prelude::BASE64_STANDARD as BASE64, Engine};
-use baseview::{Event, EventStatus, Size, Window, WindowOpenOptions, WindowScalePolicy};
+use baseview::{Event, EventStatus};
 use crossbeam::atomic::AtomicCell;
 use nih_plug::{
     params::persist::PersistentField,
-    prelude::{Editor, GuiContext, ParamSetter},
+    prelude::{Editor, GuiContext, ParamSetter, ParentWindowHandle},
 };
-use raw_window_handle::from_raw_window_handle_0_5_2;
+use reparent::TempWindow;
 use serde::{Deserialize, Serialize};
 use wry::{
     dpi::{LogicalPosition, LogicalSize, Position},
@@ -22,11 +23,14 @@ use wry::{
     Rect, WebContext, WebView, WebViewBuilder,
 };
 
+use self::window_handle::into_window_handle;
+
 pub use baseview;
 pub use keyboard_types;
 pub use wry;
 
-mod raw_window_handle;
+mod reparent;
+mod window_handle;
 
 const PLUGIN_OBJ: &str = "window.__NIH_PLUG_WEBVIEW__";
 
@@ -80,19 +84,18 @@ pub enum Message {
 pub trait EditorHandler: Send + 'static {
     fn init(&mut self, cx: &mut Context);
     fn on_frame(&mut self, cx: &mut Context);
-    fn on_message(&mut self, cx: &mut Context, message: Message);
+    fn on_message(&mut self, send_message: &dyn Fn(Message), message: Message);
     fn on_window_event(&mut self, cx: &mut Context, event: Event) -> EventStatus {
         let _ = (cx, event);
         EventStatus::Ignored
     }
 }
 
-pub struct Context<'a, 'b> {
+pub struct Context<'a> {
     handler: &'a WindowHandler,
-    window: &'a mut Window<'b>,
 }
 
-impl<'a, 'b> Context<'a, 'b> {
+impl<'a> Context<'a> {
     /// Send a message to the plugin.
     pub fn send_message(&mut self, message: Message) {
         self.handler.send_message(message);
@@ -103,7 +106,7 @@ impl<'a, 'b> Context<'a, 'b> {
     /// Do note that plugin host may refuse to resize the window, in which case
     /// this method will return `false`.
     pub fn resize_window(&mut self, width: f64, height: f64) -> bool {
-        self.handler.resize(self.window, width, height)
+        self.handler.resize(width, height)
     }
 
     /// Returns `true` if plugin parameters have changed since the last call to this method.
@@ -171,6 +174,7 @@ pub struct WebViewConfig {
 struct Init {
     editor: Box<Mutex<dyn EditorHandler>>,
     state: Arc<WebviewState>,
+    #[expect(unused)]
     title: String,
     source: WebviewSource,
     workdir: PathBuf,
@@ -181,6 +185,15 @@ struct Init {
 pub struct WebviewEditor {
     config: Arc<Init>,
     params_changed: Arc<AtomicBool>,
+    // TODO: Idk why Editor must be Send, but make UnsafeSend a SafeSend (panic if other thread).
+    webview: UnsafeSend<Rc<RefCell<Option<WebviewHandle>>>>,
+}
+
+struct WebviewHandle {
+    webview: Rc<WebView>,
+    #[expect(unused)]
+    web_context: Rc<WebContext>,
+    temp_window: TempWindow,
 }
 
 impl WebviewEditor {
@@ -214,6 +227,7 @@ impl WebviewEditor {
                 with_webview_fn: Mutex::new(Box::new(f)),
             }),
             params_changed: Arc::new(AtomicBool::new(false)),
+            webview: UnsafeSend(Rc::new(RefCell::new(None))),
         }
     }
 }
@@ -221,98 +235,46 @@ impl WebviewEditor {
 impl Editor for WebviewEditor {
     fn spawn(
         &self,
-        parent: nih_plug::prelude::ParentWindowHandle,
+        window: ParentWindowHandle,
         context: Arc<dyn GuiContext>,
     ) -> Box<dyn std::any::Any + Send> {
-        let (width, height) = self.config.state.size.load();
+        let webview_handle = self.webview.0.clone();
 
-        let options = WindowOpenOptions {
-            scale: WindowScalePolicy::SystemScaleFactor,
-            size: baseview::Size { width, height },
-            title: self.config.title.clone(),
-        };
+        // If the webview was already created, reuse it.
+        if let Some(handle) = webview_handle.borrow().as_ref() {
+            if let Some(_) = reparent::reparent_webview(&handle.webview, window) {
+                return Box::new(EditorHandle { webview_handle: webview_handle.clone() });
+            }
+        }
 
-        let config = self.config.clone();
-        let params_changed = self.params_changed.clone();
+        //// Create webview
 
-        let window_handle = baseview::Window::open_parented(&parent, options, move |mut window| {
-            let Init { state, source, editor, workdir, with_webview_fn, .. } = &*config;
+        let window = into_window_handle(window);
 
-            let (webview_rx_tx, webview_rx) = mpsc::channel();
+        let mut web_context = WebContext::new(Some(self.config.workdir.clone()));
 
-            let new_window = from_raw_window_handle_0_5_2(window);
+        let webview_builder = configure_webview(
+            context,
+            &mut web_context,
+            webview_handle.clone(),
+            self.config.clone(),
+            self.config.state.size.load(),
+            self.params_changed.clone(),
+        );
 
-            let mut webview_builder = WebViewBuilder::new_as_child(&new_window);
+        // We must use build_as_child(), because, unlike build(), it assumes that "parent"
+        // exists and it doesn't consume all keyboard events.
+        let webview = webview_builder.build_as_child(&window).expect("failed to construct webview");
 
-            // Apply user configuration.
-            webview_builder = with_webview_fn.lock().unwrap()(webview_builder);
+        ////
 
-            //
-            // Configure the webview.
+        webview_handle.replace(Some(WebviewHandle {
+            webview: Rc::new(webview).clone(),
+            web_context: Rc::new(web_context),
+            temp_window: TempWindow::new(),
+        }));
 
-            let (width, height) = state.size.load();
-
-            let mut web_context = WebContext::new(Some(workdir.clone()));
-
-            let webview_builder = webview_builder
-                .with_bounds(Rect {
-                    position: Position::Logical(LogicalPosition { x: 0.0, y: 0.0 }),
-                    size: wry::dpi::Size::Logical(LogicalSize { width, height }),
-                })
-                .with_initialization_script(include_str!("lib.js"))
-                .with_ipc_handler(move |request: Request<String>| {
-                    let message = request.into_body();
-                    if message.starts_with("text,") {
-                        let message = message.trim_start_matches("text,");
-                        webview_rx_tx.send(Message::Text(message.to_string())).ok();
-                    } else if message.starts_with("binary,") {
-                        let message = message.trim_start_matches("binary,");
-                        let bytes = BASE64.decode(message.as_bytes()).unwrap();
-                        webview_rx_tx.send(Message::Binary(bytes)).ok();
-                    }
-                })
-                .with_web_context(&mut web_context);
-
-            let webview_builder = match (*source).clone() {
-                WebviewSource::URL(url) => webview_builder.with_url(url.as_str()),
-                WebviewSource::HTML(html) => webview_builder.with_html(html),
-                WebviewSource::DirPath(root) => webview_builder
-                    .with_custom_protocol(
-                        "wry".to_string(), //
-                        move |request| match get_wry_response(&root, request) {
-                            Ok(r) => r.map(Into::into),
-                            Err(e) => http::Response::builder()
-                                .header(CONTENT_TYPE, "text/plain")
-                                .status(500)
-                                .body(e.to_string().as_bytes().to_vec())
-                                .unwrap()
-                                .map(Into::into),
-                        },
-                    )
-                    .with_url("wry://localhost"),
-                WebviewSource::CustomProtocol { url, protocol } => {
-                    webview_builder.with_url(format!("{protocol}://localhost/{url}").as_str())
-                }
-            };
-
-            let webview = webview_builder.build().expect("Failed to construct webview");
-
-            let window_handler = WindowHandler {
-                init: config.clone(),
-                context,
-                webview,
-                webview_rx,
-                params_changed,
-            };
-
-            let mut editor = editor.lock().unwrap();
-            let mut cx = window_handler.context(&mut window);
-            editor.init(&mut cx);
-
-            window_handler
-        });
-
-        return Box::new(EditorHandle { window_handle });
+        return Box::new(EditorHandle { webview_handle: webview_handle.clone() });
     }
 
     fn size(&self) -> (u32, u32) {
@@ -338,36 +300,152 @@ impl Editor for WebviewEditor {
     }
 }
 
+fn configure_webview<'a>(
+    context: Arc<dyn GuiContext>,
+    web_context: &'a mut WebContext,
+    webview_handle: Rc<RefCell<Option<WebviewHandle>>>,
+    config: Arc<Init>,
+    (width, height): (f64, f64),
+    params_changed: Arc<AtomicBool>,
+) -> WebViewBuilder<'a> {
+    let mut webview_builder = WebViewBuilder::with_web_context(web_context);
+
+    // Apply user configuration.
+    webview_builder = config.with_webview_fn.lock().unwrap()(webview_builder);
+
+    let ipc_handler = {
+        let webview_handle = Rc::downgrade(&webview_handle);
+        let config = config.clone();
+        let context = context.clone();
+        move |request: Request<String>| {
+            let webview_handle = webview_handle.upgrade().unwrap();
+            let webview = webview_handle.borrow().as_ref().unwrap().webview.clone();
+            let config = config.clone();
+            let context = context.clone();
+            ipc_handler(params_changed.clone(), webview, config, context, request);
+        }
+    };
+
+    let webview_builder = webview_builder
+        .with_focused(true)
+        .with_accept_first_mouse(true)
+        .with_bounds(Rect {
+            position: Position::Logical(LogicalPosition { x: 0.0, y: 0.0 }),
+            size: wry::dpi::Size::Logical(LogicalSize { width, height }),
+        })
+        .with_initialization_script(include_str!("lib.js"))
+        .with_ipc_handler(ipc_handler);
+
+    let webview_builder = match config.source.clone() {
+        WebviewSource::URL(url) => webview_builder.with_url(url.as_str()),
+        WebviewSource::HTML(html) => webview_builder.with_html(html),
+        WebviewSource::DirPath(root) => webview_builder
+            .with_custom_protocol("wry".to_string(), move |_id, request| {
+                match get_wry_response(&root, request) {
+                    Ok(r) => r.map(Into::into),
+                    Err(e) => http::Response::builder()
+                        .header(CONTENT_TYPE, "text/plain")
+                        .status(500)
+                        .body(e.to_string().as_bytes().to_vec())
+                        .unwrap()
+                        .map(Into::into),
+                }
+            })
+            .with_url("wry://localhost"),
+        WebviewSource::CustomProtocol { url, protocol } => {
+            webview_builder.with_url(format!("{protocol}://localhost/{url}").as_str())
+        }
+    };
+
+    webview_builder
+}
+
+fn ipc_handler(
+    params_changed: Arc<AtomicBool>,
+    webview: Rc<WebView>,
+    config: Arc<Init>,
+    context: Arc<dyn GuiContext>,
+    request: Request<String>,
+) {
+    let message = request.into_body();
+
+    let send_message = |message: Message| match message {
+        Message::Text(text) => {
+            let text = text.replace("`", r#"\`"#);
+            let script = format!("{PLUGIN_OBJ}.onmessage(`text`,`{}`);", text);
+            webview.evaluate_script(&script).ok();
+        }
+        Message::Binary(bytes) => {
+            let bytes = BASE64.encode(&bytes);
+            let script =
+                format!("{PLUGIN_OBJ}.onmessage(`binary`, {PLUGIN_OBJ}.decodeBase64(`{bytes}`));");
+            webview.evaluate_script(&script).ok();
+        }
+    };
+
+    if message.starts_with("frame") {
+        if let Err(err) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut editor = config.editor.lock().unwrap();
+
+            let handler = &WindowHandler {
+                init: config.clone(),
+                webview: webview.clone(),
+                context: context.clone(),
+                params_changed: params_changed.clone(),
+            };
+            let mut cx = Context { handler };
+
+            editor.on_frame(&mut cx);
+        })) {
+            // NOTE: We catch panic here, because `baseview` doesn't run from the "main entry
+            // point", instead it schedules this handler as a task on the main thread. For
+            // some reason, on macos if you panic from a task the process will be forever
+            // stuck and you won't be able terminate it until you log out.
+            eprintln!("{:?}", err);
+            std::process::exit(1);
+        }
+    } else if message.starts_with("text,") {
+        let message = message.trim_start_matches("text,");
+        let mut editor = config.editor.lock().unwrap();
+        editor.on_message(&send_message, Message::Text(message.to_string()));
+    } else if message.starts_with("binary,") {
+        let message = message.trim_start_matches("binary,");
+        let bytes = BASE64.decode(message.as_bytes()).unwrap();
+        let mut editor = config.editor.lock().unwrap();
+        editor.on_message(&send_message, Message::Binary(bytes));
+    }
+}
+
 /// A handle to the editor window, returned from [`Editor::spawn`]. Host will
 /// call [`drop`] on it when the window is supposed to be closed.
 struct EditorHandle {
-    window_handle: baseview::WindowHandle,
+    webview_handle: Rc<RefCell<Option<WebviewHandle>>>,
 }
 
 unsafe impl Send for EditorHandle {}
 
 impl Drop for EditorHandle {
     fn drop(&mut self) {
-        // TODO: Consider notifying the plugin that the window was closed.
-        self.window_handle.close();
+        self.webview_handle.borrow_mut().as_mut().map(|handle| {
+            handle.temp_window.reparent_from(&handle.webview);
+        });
     }
 }
 
 /// This structure manages the editor window's event loop.
 struct WindowHandler {
     init: Arc<Init>,
-    webview: WebView,
+    webview: Rc<WebView>,
     context: Arc<dyn GuiContext>,
     params_changed: Arc<AtomicBool>,
-    webview_rx: mpsc::Receiver<Message>,
 }
 
 impl WindowHandler {
-    fn context<'a, 'b>(&'a self, window: &'a mut Window<'b>) -> Context<'a, 'b> {
-        Context { handler: self, window }
+    fn context<'a>(&'a self) -> Context<'a> {
+        Context { handler: self }
     }
 
-    fn resize(&self, window: &mut baseview::Window, width: f64, height: f64) -> bool {
+    fn resize(&self, width: f64, height: f64) -> bool {
         let old = self.init.state.size.swap((width, height));
 
         if !self.context.request_resize() {
@@ -376,7 +454,8 @@ impl WindowHandler {
             return false;
         }
 
-        window.resize(Size { width: width as f64, height: height as f64 });
+        // We may need to reimplement this ourselves.
+        // window.resize(Size { width: width as f64, height: height as f64 });
 
         // FIXME: handle error?
         let _ = self.webview.set_bounds(Rect {
@@ -403,23 +482,13 @@ impl WindowHandler {
             }
         }
     }
-
-    fn next_message(&self) -> Result<Message, mpsc::TryRecvError> {
-        self.webview_rx.try_recv()
-    }
 }
 
 impl baseview::WindowHandler for WindowHandler {
-    fn on_frame(&mut self, window: &mut baseview::Window) {
+    fn on_frame(&mut self, _window: &mut baseview::Window) {
         if let Err(err) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut editor = self.init.editor.lock().unwrap();
-            let mut cx = self.context(window);
-
-            // Call on_message for each message received from the webview.
-            while let Ok(message) = self.next_message() {
-                editor.on_message(&mut cx, message);
-            }
-
+            let mut cx = self.context();
             editor.on_frame(&mut cx);
         })) {
             // NOTE: We catch panic here, because `baseview` doesn't run from the "main entry
@@ -431,10 +500,10 @@ impl baseview::WindowHandler for WindowHandler {
         }
     }
 
-    fn on_event(&mut self, window: &mut baseview::Window, event: Event) -> EventStatus {
+    fn on_event(&mut self, _window: &mut baseview::Window, event: Event) -> EventStatus {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut editor = self.init.editor.lock().unwrap();
-            let mut cx = self.context(window);
+            let mut cx = self.context();
 
             editor.on_window_event(&mut cx, event)
         })) {
@@ -470,3 +539,6 @@ fn get_wry_response(
 
     Response::builder().header(CONTENT_TYPE, mimetype).body(content).map_err(Into::into)
 }
+
+struct UnsafeSend<T>(T);
+unsafe impl<T> Send for UnsafeSend<T> {}

@@ -41,7 +41,7 @@ impl SimpleEditor {
             state,
             config,
             move |w: wry::WebViewBuilder| {
-                w.with_custom_protocol(protocol.clone(), |req| {
+                w.with_custom_protocol(protocol.clone(), |_id, req| {
                     let path = req.uri().path();
                     println!("Request: {}", path);
                     if path == "/index.html" {
@@ -80,9 +80,9 @@ impl EditorHandler for SimpleEditor {
 
     fn on_frame(&mut self, _: &mut Context) {}
 
-    fn on_message(&mut self, cx: &mut Context, message: Message) {
+    fn on_message(&mut self, send_message: &dyn Fn(Message), message: Message) {
         println!("Received message: {:?}", message);
-        cx.send_message(Message::Text("Hello from Rust!".to_string()));
+        send_message(Message::Text("Hello from Rust!".to_string()));
     }
 }
 

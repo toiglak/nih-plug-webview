@@ -16,15 +16,41 @@ baseview = { git = "https://github.com/RustAudio/baseview.git", rev = "cd4df61" 
 crossbeam = "0.8.4"
 keyboard-types = "0.6.2"
 mime_guess = "2.0.4"
-nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "40269e1", default-features = false }
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "17ba595e748927290eb72974bc528f11d1d20e89", default-features = false }
 raw-window-handle = "0.6.2"
 raw-window-handle-0-5 = { package = "raw-window-handle", version = "0.5.2" }
 serde = ">=1.0"
-wry = "0.45.0"
+wry = { path = "wry", features = ["tracing"] }
+log = "0.4"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-core = "0.60"
+[target.'cfg(target_os = "windows")'.dependencies.windows]
+version = "0.60"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
+    "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Globalization",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input",
+    "Win32_UI_Input_KeyboardAndMouse",
+]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.0"
+objc2-app-kit = "0.3.0"
 
 
 [dev-dependencies]
-nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "40269e1", features = [
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "17ba595e748927290eb72974bc528f11d1d20e89", features = [
     "standalone",
 ] }
 tempfile = "3.14.0"
