@@ -15,11 +15,8 @@ use nih_plug::{
     params::persist::PersistentField,
     prelude::{Editor, GuiContext, ParamSetter, ParentWindowHandle},
 };
-#[cfg(target_os = "macos")]
-use objc2_app_kit::NSView;
+use reparent::TempWindow;
 use serde::{Deserialize, Serialize};
-#[cfg(target_os = "windows")]
-use windows::Win32::Foundation::HWND;
 use wry::{
     dpi::{LogicalPosition, LogicalSize, Position},
     http::{self, header::CONTENT_TYPE, Request, Response},
@@ -196,8 +193,7 @@ struct WebviewHandle {
     webview: Rc<WebView>,
     #[expect(unused)]
     web_context: Rc<WebContext>,
-    #[cfg(target_os = "windows")]
-    temp_hwnd: Option<HWND>,
+    temp_window: TempWindow,
 }
 
 impl WebviewEditor {
@@ -246,8 +242,7 @@ impl Editor for WebviewEditor {
 
         // If the webview was already created, reuse it.
         if let Some(handle) = webview_handle.borrow().as_ref() {
-            unsafe {
-                reparent_webview(&handle.webview, window);
+            if let Some(_) = reparent::reparent_webview(&handle.webview, window) {
                 return Box::new(EditorHandle { webview_handle: webview_handle.clone() });
             }
         }
@@ -276,8 +271,7 @@ impl Editor for WebviewEditor {
         webview_handle.replace(Some(WebviewHandle {
             webview: Rc::new(webview).clone(),
             web_context: Rc::new(web_context),
-            #[cfg(target_os = "windows")]
-            temp_hwnd: None,
+            temp_window: TempWindow::new(),
         }));
 
         return Box::new(EditorHandle { webview_handle: webview_handle.clone() });
@@ -304,56 +298,6 @@ impl Editor for WebviewEditor {
     fn param_modulation_changed(&self, _id: &str, _modulation_offset: f32) {
         self.params_changed.store(true, Ordering::SeqCst);
     }
-}
-
-#[cfg(target_os = "macos")]
-unsafe fn reparent_webview(webview: &Rc<WebView>, window: ParentWindowHandle) {
-    use wry::WebViewExtMacOS;
-
-    // Obtain `ns_view` from `ParentWindowHandle`
-    let ns_view = match window {
-        ParentWindowHandle::AppKitNsView(ns_view) => ns_view.cast::<NSView>(),
-        _ => unreachable!(),
-    };
-    let ns_view = ns_view.as_ref().unwrap();
-
-    // Obtain as_ns_view from `ns_view`
-    let ns_window = ns_view.window().unwrap();
-    let ns_window_ptr = objc2::rc::Retained::into_raw(ns_window);
-
-    // Reparent and focus the window
-    webview.reparent(ns_window_ptr).unwrap();
-    // NOTE: This breaks Shift + W — we need to press Shift + W twice.
-    webview.activate().unwrap();
-    // Make first responder.
-    webview.focus().unwrap();
-}
-
-#[allow(unused)]
-#[cfg(target_os = "windows")]
-unsafe fn reparent_webview(webview: Rc<WebView>, handle: ParentWindowHandle) {
-    use wry::WebViewExtWindows;
-
-    let hwnd = match handle {
-        ParentWindowHandle::Win32Hwnd(hwnd) => hwnd,
-        _ => panic!("Expected a Win32 window handle"),
-    };
-
-    // TODO: Handle reparenting gracefully.
-    webview.reparent(hwnd as isize).unwrap();
-}
-
-#[allow(unused)]
-#[cfg(target_os = "linux")]
-unsafe fn reparent_webview(_webview: Rc<WebView>, _window: WindowHandle) {
-    // TODO: Implement Linux-specific reparenting
-}
-
-#[allow(unused)]
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-unsafe fn reparent_webview(_webview: Rc<WebView>, _window: WindowHandle) {
-    // Fallback for unsupported platforms
-    log::warn!("Webview reparenting not implemented for this platform");
 }
 
 fn configure_webview<'a>(
@@ -482,52 +426,9 @@ unsafe impl Send for EditorHandle {}
 
 impl Drop for EditorHandle {
     fn drop(&mut self) {
-        #[cfg(target_os = "windows")]
-        {
-            use windows::{
-                core::PCWSTR,
-                Win32::UI::WindowsAndMessaging::{
-                    CreateWindowExW, WS_DISABLED, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
-                },
-            };
-            use wry::WebViewExtWindows;
-
-            let mut handle = self.webview_handle.borrow_mut();
-            // TODO: Consider moving this to ::spawn, that way we can avoid an Option<HWND>
-            let handle = handle.as_mut().unwrap();
-
-            let temp_window = match handle.temp_hwnd {
-                Some(hwnd) => hwnd,
-                None => {
-                    let hwnd = unsafe {
-                        // Create an invisible window to host the webview
-                        let class_name = windows::core::w!("STATIC");
-                        CreateWindowExW(
-                            WS_EX_TOOLWINDOW, // Extended style (tool window has no taskbar presence)
-                            PCWSTR(class_name.as_ptr()),
-                            PCWSTR::null(),              // Window title
-                            WS_OVERLAPPED | WS_DISABLED, // Window style (disabled and not visible)
-                            0,
-                            0,
-                            0,
-                            0,
-                            None,
-                            None,
-                            None,
-                            None,
-                        )
-                        .unwrap()
-                    };
-                    // Store it for the next time
-                    handle.temp_hwnd = Some(hwnd);
-                    hwnd
-                }
-            };
-
-            // Reparent the webview to our temporary invisible window
-            let webview = handle.webview.clone();
-            webview.reparent(temp_window.0 as isize).expect("failed to reparent webview");
-        }
+        self.webview_handle.borrow_mut().as_mut().map(|handle| {
+            handle.temp_window.reparent_from(&handle.webview);
+        });
     }
 }
 
