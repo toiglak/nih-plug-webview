@@ -18,6 +18,7 @@ use nih_plug::{
 #[cfg(target_os = "macos")]
 use objc2_app_kit::NSView;
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "windows")]
 use windows::Win32::Foundation::HWND;
 use wry::{
     dpi::{LogicalPosition, LogicalSize, Position},
@@ -31,6 +32,7 @@ pub use baseview;
 pub use keyboard_types;
 pub use wry;
 
+mod reparent;
 mod window_handle;
 
 const PLUGIN_OBJ: &str = "window.__NIH_PLUG_WEBVIEW__";
@@ -240,31 +242,12 @@ impl Editor for WebviewEditor {
         window: ParentWindowHandle,
         context: Arc<dyn GuiContext>,
     ) -> Box<dyn std::any::Any + Send> {
-        // OBSERVATION: When running as a standalone app, `ns_view.window()` is
-        // None.
-        //
-        // Perhaps this is what happens: When running as a standalone app `window`
-        // IS the `ns_window`, because that's what nih_plug provides it with.
-        // However, when running in Bitwig, `window` is a `ns_view`, which is a
-        // child of the `ns_window`, which is why need to call `window()` on it.
-        //
-        // Maybe we could assume that there's ALWAYS a `ns_window`, it's just
-        // sometimes accessbile directly from `ns_view` and sometimes from
-        // `ns_view.window()`.
-        #[cfg(target_os = "macos")]
-        unsafe {
-            log::debug!("ns_view: {:?}", window);
-            let ns_view = as_ns_view(window);
-            log::debug!("ns_view.window: {:?}", ns_view.window());
-        };
-
         let webview_handle = self.webview.0.clone();
 
         // If the webview was already created, reuse it.
         if let Some(handle) = webview_handle.borrow().as_ref() {
-            #[allow(unused)]
             unsafe {
-                reparent_webview(handle.webview.clone(), window);
+                reparent_webview(&handle.webview, window);
                 return Box::new(EditorHandle { webview_handle: webview_handle.clone() });
             }
         }
@@ -324,24 +307,19 @@ impl Editor for WebviewEditor {
 }
 
 #[cfg(target_os = "macos")]
-unsafe fn as_ns_view<'a>(parent: WindowHandle) -> &'a NSView {
-    let ns_view_ptr = match parent.as_raw() {
-        RawWindowHandle::AppKit(app_kit_window_handle) => {
-            app_kit_window_handle.ns_view.cast::<NSView>()
-        }
-        _ => panic!(),
+unsafe fn reparent_webview(webview: &Rc<WebView>, window: ParentWindowHandle) {
+    use wry::WebViewExtMacOS;
+
+    // Obtain `ns_view` from `ParentWindowHandle`
+    let ns_view = match window {
+        ParentWindowHandle::AppKitNsView(ns_view) => ns_view.cast::<NSView>(),
+        _ => unreachable!(),
     };
-    ns_view_ptr.as_ptr().as_ref().unwrap()
-}
+    let ns_view = ns_view.as_ref().unwrap();
 
-#[allow(unused)]
-#[cfg(target_os = "macos")]
-unsafe fn reparent_webview(webview: &Rc<WebView>, window: WindowHandle) {
-    let ns_view = as_ns_view(window);
-
-    // Obtain ns_window from ns_view
+    // Obtain as_ns_view from `ns_view`
     let ns_window = ns_view.window().unwrap();
-    let (ns_window, ns_window_ptr) = (ns_window.clone(), objc2::rc::Retained::into_raw(ns_window));
+    let ns_window_ptr = objc2::rc::Retained::into_raw(ns_window);
 
     // Reparent and focus the window
     webview.reparent(ns_window_ptr).unwrap();
