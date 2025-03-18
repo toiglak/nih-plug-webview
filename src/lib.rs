@@ -233,6 +233,11 @@ impl Editor for WebviewEditor {
         window: ParentWindowHandle,
         context: Arc<dyn GuiContext>,
     ) -> Box<dyn std::any::Any + Send> {
+        // MACOS: When running as a standalone application, nih_plug relies on baseview to
+        // provide the plugin with `ParentWindowHandle`. Due to a bug, the exposed
+        // `ns_view` lacks a parent `ns_window`. This prevents `wry` from spawning
+        // correctly, as it requires `ns_window` to be present.
+
         let webview_handle = self.webview.0.clone();
 
         // If the webview was already created, reuse it.
