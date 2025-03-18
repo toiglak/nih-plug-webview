@@ -20,7 +20,9 @@ nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "17ba595
 raw-window-handle = "0.6.2"
 raw-window-handle-0-5 = { package = "raw-window-handle", version = "0.5.2" }
 serde = ">=1.0"
-wry = { path = "wry", features = ["tracing"] }
+wry = { git = "https://github.com/toiglak/wry.git", branch = "v0.50.5-fork", features = [
+    "tracing",
+] }
 log = "0.4"
 
 [target.'cfg(target_os = "windows")'.dependencies]

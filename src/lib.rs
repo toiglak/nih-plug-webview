@@ -139,7 +139,9 @@ impl WebviewState {
     /// Initialize the GUI's state. The window size is in logical pixels, so
     /// before it is multiplied by the DPI scaling factor.
     pub fn new(width: f64, height: f64) -> WebviewState {
-        WebviewState { size: AtomicCell::new((width, height)) }
+        WebviewState {
+            size: AtomicCell::new((width, height)),
+        }
     }
 
     /// Returns a `(width, height)` pair for the current size of the GUI in
@@ -243,7 +245,9 @@ impl Editor for WebviewEditor {
         // If the webview was already created, reuse it.
         if let Some(handle) = webview_handle.borrow().as_ref() {
             if let Some(_) = reparent::reparent_webview(&handle.webview, window) {
-                return Box::new(EditorHandle { webview_handle: webview_handle.clone() });
+                return Box::new(EditorHandle {
+                    webview_handle: webview_handle.clone(),
+                });
             }
         }
 
@@ -264,7 +268,9 @@ impl Editor for WebviewEditor {
 
         // We must use build_as_child(), because, unlike build(), it assumes that "parent"
         // exists and it doesn't consume all keyboard events.
-        let webview = webview_builder.build_as_child(&window).expect("failed to construct webview");
+        let webview = webview_builder
+            .build_as_child(&window)
+            .expect("failed to construct webview");
 
         ////
 
@@ -274,7 +280,9 @@ impl Editor for WebviewEditor {
             temp_window: TempWindow::new(),
         }));
 
-        return Box::new(EditorHandle { webview_handle: webview_handle.clone() });
+        return Box::new(EditorHandle {
+            webview_handle: webview_handle.clone(),
+        });
     }
 
     fn size(&self) -> (u32, u32) {
@@ -340,8 +348,9 @@ fn configure_webview<'a>(
         WebviewSource::URL(url) => webview_builder.with_url(url.as_str()),
         WebviewSource::HTML(html) => webview_builder.with_html(html),
         WebviewSource::DirPath(root) => webview_builder
-            .with_custom_protocol("wry".to_string(), move |_id, request| {
-                match get_wry_response(&root, request) {
+            .with_custom_protocol(
+                "wry".to_string(),
+                move |_id, request| match get_wry_response(&root, request) {
                     Ok(r) => r.map(Into::into),
                     Err(e) => http::Response::builder()
                         .header(CONTENT_TYPE, "text/plain")
@@ -349,8 +358,8 @@ fn configure_webview<'a>(
                         .body(e.to_string().as_bytes().to_vec())
                         .unwrap()
                         .map(Into::into),
-                }
-            })
+                },
+            )
             .with_url("wry://localhost"),
         WebviewSource::CustomProtocol { url, protocol } => {
             webview_builder.with_url(format!("{protocol}://localhost/{url}").as_str())
@@ -534,10 +543,15 @@ fn get_wry_response(
     let path = std::fs::canonicalize(root.join(path))?;
     let content = std::fs::read(&path)?;
 
-    let mimetype =
-        mime_guess::from_path(&path).first().map(|mime| mime.to_string()).unwrap_or("".to_string());
+    let mimetype = mime_guess::from_path(&path)
+        .first()
+        .map(|mime| mime.to_string())
+        .unwrap_or("".to_string());
 
-    Response::builder().header(CONTENT_TYPE, mimetype).body(content).map_err(Into::into)
+    Response::builder()
+        .header(CONTENT_TYPE, mimetype)
+        .body(content)
+        .map_err(Into::into)
 }
 
 struct UnsafeSend<T>(T);
