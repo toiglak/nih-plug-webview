@@ -22,23 +22,7 @@ wry = { git = "https://github.com/toiglak/wry.git", branch = "v0.50.5-fork", fea
 log = "0.4"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-core = "0.60"
-windows = { version = "0.60", features = [
-    "Win32_Foundation",
-    "Win32_Graphics_Gdi",
-    "Win32_System_Com",
-    "Win32_System_Com_StructuredStorage",
-    "Win32_System_LibraryLoader",
-    "Win32_System_Ole",
-    "Win32_System_SystemInformation",
-    "Win32_System_SystemServices",
-    "Win32_UI_Shell",
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_Globalization",
-    "Win32_UI_HiDpi",
-    "Win32_UI_Input",
-    "Win32_UI_Input_KeyboardAndMouse",
-] }
+windows = { version = "0.60", features = ["Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.0"
