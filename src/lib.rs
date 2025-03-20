@@ -123,7 +123,7 @@ impl<'a> PersistentField<'a, WebViewState> for Arc<WebViewState> {
 }
 
 pub struct Context {
-    init: Rc<Init>,
+    state: Arc<WebViewState>,
     webview: Rc<WebView>,
     context: Arc<dyn GuiContext>,
     params_changed: Rc<Cell<bool>>,
@@ -153,11 +153,11 @@ impl Context {
     /// Do note that plugin host may refuse to resize the window, in which case
     /// this method will return `false`.
     pub fn resize_window(&mut self, width: f64, height: f64) -> bool {
-        let old = self.init.state.size.swap((width, height));
+        let old = self.state.size.swap((width, height));
 
         if !self.context.request_resize() {
             // Resize failed.
-            self.init.state.size.store(old);
+            self.state.size.store(old);
             return false;
         }
 
@@ -198,9 +198,9 @@ pub struct WebViewConfig {
     pub workdir: PathBuf,
 }
 
-struct Init {
-    editor: Rc<RefCell<dyn EditorHandler>>,
+struct Config {
     state: Arc<WebViewState>,
+    editor: Rc<RefCell<dyn EditorHandler>>,
     #[expect(unused)]
     title: String,
     source: WebViewSource,
@@ -215,9 +215,9 @@ struct WebViewInstance {
     temp_window: TempWindow,
 }
 
-/// A webview-based editor.
+/// A webview-based plugin editor.
 pub struct WebViewEditor {
-    config: SendCell<Rc<Init>>,
+    config: SendCell<Config>,
     params_changed: SendCell<Rc<Cell<bool>>>,
     instance: SendCell<Rc<RefCell<Option<WebViewInstance>>>>,
 }
@@ -244,14 +244,14 @@ impl WebViewEditor {
         f: impl Fn(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static,
     ) -> WebViewEditor {
         WebViewEditor {
-            config: SendCell::new(Rc::new(Init {
+            config: SendCell::new(Config {
                 editor: Rc::new(RefCell::new(editor)),
                 state: state.clone(),
                 title: config.title,
                 source: config.source,
                 workdir: config.workdir,
                 with_webview_fn: Rc::new(f),
-            })),
+            }),
             params_changed: SendCell::new(Rc::new(Cell::new(false))),
             instance: SendCell::new(Rc::new(RefCell::new(None))),
         }
@@ -266,15 +266,13 @@ impl Editor for WebViewEditor {
     fn spawn(
         &self,
         window: ParentWindowHandle,
-        context: Arc<dyn GuiContext>,
+        gui_context: Arc<dyn GuiContext>,
     ) -> Box<dyn std::any::Any + Send> {
-        let instance_handle = self.instance.clone();
-
         // If the webview was already created, reuse it.
-        if let Some(handle) = instance_handle.borrow().as_ref() {
+        if let Some(handle) = self.instance.borrow().as_ref() {
             if let Some(_) = reparent::reparent_webview(&handle.webview, window) {
                 return Box::new(EditorHandle {
-                    instance: SendCell::new(instance_handle.clone()),
+                    instance: SendCell::new(self.instance.clone()),
                 });
             }
         }
@@ -286,12 +284,12 @@ impl Editor for WebViewEditor {
         let mut web_context = WebContext::new(Some(self.config.workdir.clone()));
 
         let webview_builder = configure_webview(
-            context,
+            &self.config,
+            gui_context,
             &mut web_context,
-            instance_handle.clone(),
-            self.config.clone(),
-            self.config.state.size.load(),
             self.params_changed.clone(),
+            self.instance.clone(),
+            self.config.state.size.load(),
         );
 
         // We use `build_as_child` over `build` because `build_as_child` knows that
@@ -300,14 +298,14 @@ impl Editor for WebViewEditor {
             .build_as_child(&window)
             .expect("failed to construct webview");
 
-        instance_handle.replace(Some(WebViewInstance {
+        self.instance.replace(Some(WebViewInstance {
             webview: Rc::new(webview).clone(),
             web_context: Rc::new(web_context),
             temp_window: TempWindow::new(),
         }));
 
         return Box::new(EditorHandle {
-            instance: SendCell::new(instance_handle.clone()),
+            instance: SendCell::new(self.instance.clone()),
         });
     }
 
@@ -317,8 +315,7 @@ impl Editor for WebViewEditor {
     }
 
     fn set_scale_factor(&self, _factor: f32) -> bool {
-        // TODO: implement for Windows and Linux
-        return false;
+        return false; // FIXME, or does wry handle it?
     }
 
     fn param_values_changed(&self) {
@@ -335,12 +332,12 @@ impl Editor for WebViewEditor {
 }
 
 fn configure_webview<'a>(
-    context: Arc<dyn GuiContext>,
+    config: &Config,
+    gui_context: Arc<dyn GuiContext>,
     web_context: &'a mut WebContext,
-    webview_handle: Rc<RefCell<Option<WebViewInstance>>>,
-    config: Rc<Init>,
-    (width, height): (f64, f64),
     params_changed: Rc<Cell<bool>>,
+    instance: Rc<RefCell<Option<WebViewInstance>>>,
+    (width, height): (f64, f64),
 ) -> WebViewBuilder<'a> {
     let mut webview_builder = WebViewBuilder::with_web_context(web_context);
 
@@ -348,15 +345,21 @@ fn configure_webview<'a>(
     webview_builder = (*config.with_webview_fn)(webview_builder);
 
     let ipc_handler = {
-        let webview_handle = Rc::downgrade(&webview_handle);
-        let config = config.clone();
-        let context = context.clone();
+        let instance = Rc::downgrade(&instance);
+        let state = config.state.clone();
+        let editor = config.editor.clone();
+        let context = gui_context.clone();
         move |request: Request<String>| {
-            let webview_handle = webview_handle.upgrade().unwrap();
-            let webview = webview_handle.borrow().as_ref().unwrap().webview.clone();
-            let config = config.clone();
-            let context = context.clone();
-            ipc_handler(params_changed.clone(), webview, config, context, request);
+            let instance = instance.upgrade().unwrap();
+            let webview = instance.borrow().as_ref().unwrap().webview.clone();
+            ipc_handler(
+                webview,
+                state.clone(),
+                editor.clone(),
+                context.clone(),
+                params_changed.clone(),
+                request,
+            );
         }
     };
 
@@ -396,10 +399,11 @@ fn configure_webview<'a>(
 }
 
 fn ipc_handler(
-    params_changed: Rc<Cell<bool>>,
     webview: Rc<WebView>,
-    config: Rc<Init>,
+    state: Arc<WebViewState>,
+    editor: Rc<RefCell<dyn EditorHandler>>,
     context: Arc<dyn GuiContext>,
+    params_changed: Rc<Cell<bool>>,
     request: Request<String>,
 ) {
     let message = request.into_body();
@@ -420,16 +424,14 @@ fn ipc_handler(
 
     if message.starts_with("frame") {
         if let Err(err) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut editor = config.editor.borrow_mut();
-
             let mut cx = Context {
-                init: config.clone(),
+                state: state.clone(),
                 webview: webview.clone(),
                 context: context.clone(),
                 params_changed: params_changed.clone(),
             };
 
-            editor.on_frame(&mut cx);
+            editor.borrow_mut().on_frame(&mut cx);
         })) {
             // NOTE: We catch panic here, because `baseview` doesn't run from the "main entry
             // point", instead it schedules this handler as a task on the main thread. For
@@ -440,12 +442,12 @@ fn ipc_handler(
         }
     } else if message.starts_with("text,") {
         let message = message.trim_start_matches("text,");
-        let mut editor = config.editor.borrow_mut();
+        let mut editor = editor.borrow_mut();
         editor.on_message(&send_message, Message::Text(message.to_string()));
     } else if message.starts_with("binary,") {
         let message = message.trim_start_matches("binary,");
         let bytes = BASE64.decode(message.as_bytes()).unwrap();
-        let mut editor = config.editor.borrow_mut();
+        let mut editor = editor.borrow_mut();
         editor.on_message(&send_message, Message::Binary(bytes));
     }
 }
