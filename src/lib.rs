@@ -1,11 +1,8 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     path::PathBuf,
     rc::Rc,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
+    sync::Arc,
 };
 
 use base64::{prelude::BASE64_STANDARD as BASE64, Engine};
@@ -22,17 +19,31 @@ use wry::{
 };
 
 use self::reparent::TempWindow;
+use self::safe_cell::SendCell;
 use self::window_handle::into_window_handle;
 
 mod reparent;
+mod safe_cell;
 mod window_handle;
 
 pub use wry;
 
 const PLUGIN_OBJ: &str = "window.__NIH_PLUG_WEBVIEW__";
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Message {
+    Text(String),
+    Binary(Vec<u8>),
+}
+
+pub trait EditorHandler: Send + 'static {
+    fn init(&mut self, cx: &mut Context);
+    fn on_frame(&mut self, cx: &mut Context);
+    fn on_message(&mut self, send_message: &dyn Fn(Message), message: Message);
+}
+
 #[derive(Debug, Clone)]
-pub enum WebviewSource {
+pub enum WebViewSource {
     /// Loads a web page from the given URL.
     ///
     /// For example `https://example.com`.
@@ -58,7 +69,7 @@ pub enum WebviewSource {
     /// ## Example
     ///
     /// ```rust
-    /// WebviewEditor::new_with_webview("my-plugin", source, params, handler, |webview| {
+    /// WebViewEditor::new_with_webview("my-plugin", source, params, handler, |webview| {
     ///     webview.with_custom_protocol("wry".to_string(), |request| {
     ///         // Handle the request here.
     ///         Ok(http::Response::builder())
@@ -72,67 +83,21 @@ pub enum WebviewSource {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Message {
-    Text(String),
-    Binary(Vec<u8>),
-}
-
-pub trait EditorHandler: Send + 'static {
-    fn init(&mut self, cx: &mut Context);
-    fn on_frame(&mut self, cx: &mut Context);
-    fn on_message(&mut self, send_message: &dyn Fn(Message), message: Message);
-}
-
-pub struct Context<'a> {
-    handler: &'a WindowHandler,
-}
-
-impl<'a> Context<'a> {
-    /// Send a message to the plugin.
-    pub fn send_message(&mut self, message: Message) {
-        self.handler.send_message(message);
-    }
-
-    /// Resize the window to the given size (in logical pixels).
-    ///
-    /// Do note that plugin host may refuse to resize the window, in which case
-    /// this method will return `false`.
-    pub fn resize_window(&mut self, width: f64, height: f64) -> bool {
-        self.handler.resize(width, height)
-    }
-
-    /// Returns `true` if plugin parameters have changed since the last call to this method.
-    pub fn params_changed(&mut self) -> bool {
-        self.handler.params_changed.swap(false, Ordering::SeqCst)
-    }
-
-    /// Returns a `ParamSetter` which can be used to set parameter values.
-    pub fn get_setter(&self) -> ParamSetter {
-        ParamSetter::new(&*self.handler.context)
-    }
-
-    /// Returns a reference to the `WebView` used by the editor.
-    pub fn get_webview(&self) -> &WebView {
-        &self.handler.webview
-    }
-}
-
 /// `nih_plug_webview`'s state that should be persisted between sessions (like window size).
 ///
 /// Add it as a persistent parameter to your plugin's state.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct WebviewState {
+pub struct WebViewState {
     /// The window's size in logical pixels before applying `scale_factor`.
     #[serde(with = "nih_plug::params::persist::serialize_atomic_cell")]
     size: AtomicCell<(f64, f64)>,
 }
 
-impl WebviewState {
+impl WebViewState {
     /// Initialize the GUI's state. The window size is in logical pixels, so
     /// before it is multiplied by the DPI scaling factor.
-    pub fn new(width: f64, height: f64) -> WebviewState {
-        WebviewState {
+    pub fn new(width: f64, height: f64) -> WebViewState {
+        WebViewState {
             size: AtomicCell::new((width, height)),
         }
     }
@@ -144,16 +109,83 @@ impl WebviewState {
     }
 }
 
-impl<'a> PersistentField<'a, WebviewState> for Arc<WebviewState> {
-    fn set(&self, new_value: WebviewState) {
+impl<'a> PersistentField<'a, WebViewState> for Arc<WebViewState> {
+    fn set(&self, new_value: WebViewState) {
         self.size.store(new_value.size.load());
     }
 
     fn map<F, R>(&self, f: F) -> R
     where
-        F: Fn(&WebviewState) -> R,
+        F: Fn(&WebViewState) -> R,
     {
         f(self)
+    }
+}
+
+pub struct Context {
+    init: Rc<Init>,
+    webview: Rc<WebView>,
+    context: Arc<dyn GuiContext>,
+    params_changed: Rc<Cell<bool>>,
+}
+
+impl Context {
+    /// Send a message to the plugin.
+    pub fn send_message(&mut self, message: Message) {
+        match message {
+            Message::Text(text) => {
+                let text = text.replace("`", r#"\`"#);
+                let script = format!("{PLUGIN_OBJ}.onmessage(`text`,`{}`);", text);
+                self.webview.evaluate_script(&script).ok();
+            }
+            Message::Binary(bytes) => {
+                let bytes = BASE64.encode(&bytes);
+                let script = format!(
+                    "{PLUGIN_OBJ}.onmessage(`binary`, {PLUGIN_OBJ}.decodeBase64(`{bytes}`));"
+                );
+                self.webview.evaluate_script(&script).ok();
+            }
+        }
+    }
+
+    /// Resize the window to the given size (in logical pixels).
+    ///
+    /// Do note that plugin host may refuse to resize the window, in which case
+    /// this method will return `false`.
+    pub fn resize_window(&mut self, width: f64, height: f64) -> bool {
+        let old = self.init.state.size.swap((width, height));
+
+        if !self.context.request_resize() {
+            // Resize failed.
+            self.init.state.size.store(old);
+            return false;
+        }
+
+        // We may need to reimplement this ourselves.
+        // window.resize(Size { width: width as f64, height: height as f64 });
+
+        // FIXME: handle error?
+        let _ = self.webview.set_bounds(Rect {
+            position: Position::Logical(LogicalPosition { x: 0.0, y: 0.0 }),
+            size: wry::dpi::Size::Logical(LogicalSize { width, height }),
+        });
+
+        true
+    }
+
+    /// Returns `true` if plugin parameters have changed since the last call to this method.
+    pub fn params_changed(&mut self) -> bool {
+        self.params_changed.replace(false)
+    }
+
+    /// Returns a `ParamSetter` which can be used to set parameter values.
+    pub fn get_setter(&self) -> ParamSetter {
+        ParamSetter::new(&*self.context)
+    }
+
+    /// Returns a reference to the `WebView` used by the editor.
+    pub fn get_webview(&self) -> &WebView {
+        &self.webview
     }
 }
 
@@ -161,73 +193,72 @@ pub struct WebViewConfig {
     /// The title of the window when running as a standalone application.
     pub title: String,
     /// The source for the site to be loaded in the webview.
-    pub source: WebviewSource,
+    pub source: WebViewSource,
     /// The directory where webview will store its working data.
     pub workdir: PathBuf,
 }
 
 struct Init {
-    editor: Box<Mutex<dyn EditorHandler>>,
-    state: Arc<WebviewState>,
+    editor: Rc<RefCell<dyn EditorHandler>>,
+    state: Arc<WebViewState>,
     #[expect(unused)]
     title: String,
-    source: WebviewSource,
+    source: WebViewSource,
     workdir: PathBuf,
-    with_webview_fn: Mutex<Box<dyn Fn(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static>>,
+    with_webview_fn: Rc<dyn Fn(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static>,
 }
 
-/// A webview-based editor.
-pub struct WebviewEditor {
-    config: Arc<Init>,
-    params_changed: Arc<AtomicBool>,
-    // TODO: Idk why Editor must be Send, but make UnsafeSend a SafeSend (panic if other thread).
-    webview: UnsafeSend<Rc<RefCell<Option<WebviewHandle>>>>,
-}
-
-struct WebviewHandle {
+struct WebViewInstance {
     webview: Rc<WebView>,
     #[expect(unused)]
     web_context: Rc<WebContext>,
     temp_window: TempWindow,
 }
 
-impl WebviewEditor {
+/// A webview-based editor.
+pub struct WebViewEditor {
+    config: SendCell<Rc<Init>>,
+    params_changed: SendCell<Rc<Cell<bool>>>,
+    instance: SendCell<Rc<RefCell<Option<WebViewInstance>>>>,
+}
+
+impl WebViewEditor {
     pub fn new(
         editor: impl EditorHandler,
-        state: &Arc<WebviewState>,
+        state: &Arc<WebViewState>,
         config: WebViewConfig,
-    ) -> WebviewEditor {
+    ) -> WebViewEditor {
         Self::new_with_webview(editor, state, config, |webview| webview)
     }
 
-    /// Creates a new `WebviewEditor` with the callback which allows you to configure many
+    /// Creates a new `WebViewEditor` with the callback which allows you to configure many
     /// of the [`WebViewBuilder`](wry::WebViewBuilder) settings.
     ///
     /// **Note:** Some settings are overridden to ensure proper functionality of this
-    /// library. Refer to the `WebviewEditor::spawn` implementation for details on which
+    /// library. Refer to the `WebViewEditor::spawn` implementation for details on which
     /// settings are affected.
     pub fn new_with_webview(
         editor: impl EditorHandler,
-        state: &Arc<WebviewState>,
+        state: &Arc<WebViewState>,
         config: WebViewConfig,
         f: impl Fn(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static,
-    ) -> WebviewEditor {
-        WebviewEditor {
-            config: Arc::new(Init {
-                editor: Box::new(Mutex::new(editor)),
+    ) -> WebViewEditor {
+        WebViewEditor {
+            config: SendCell::new(Rc::new(Init {
+                editor: Rc::new(RefCell::new(editor)),
                 state: state.clone(),
                 title: config.title,
                 source: config.source,
                 workdir: config.workdir,
-                with_webview_fn: Mutex::new(Box::new(f)),
-            }),
-            params_changed: Arc::new(AtomicBool::new(false)),
-            webview: UnsafeSend(Rc::new(RefCell::new(None))),
+                with_webview_fn: Rc::new(f),
+            })),
+            params_changed: SendCell::new(Rc::new(Cell::new(false))),
+            instance: SendCell::new(Rc::new(RefCell::new(None))),
         }
     }
 }
 
-impl Editor for WebviewEditor {
+impl Editor for WebViewEditor {
     // MACOS: When running as a standalone application, nih_plug relies on
     // `baseview` to provide the plugin with a `ParentWindowHandle`. Due to a bug,
     // the exposed `ns_view` lacks a parent `ns_window`. This causes `wry` to panic
@@ -237,13 +268,13 @@ impl Editor for WebviewEditor {
         window: ParentWindowHandle,
         context: Arc<dyn GuiContext>,
     ) -> Box<dyn std::any::Any + Send> {
-        let webview_handle = self.webview.0.clone();
+        let instance_handle = self.instance.clone();
 
         // If the webview was already created, reuse it.
-        if let Some(handle) = webview_handle.borrow().as_ref() {
+        if let Some(handle) = instance_handle.borrow().as_ref() {
             if let Some(_) = reparent::reparent_webview(&handle.webview, window) {
                 return Box::new(EditorHandle {
-                    webview_handle: webview_handle.clone(),
+                    instance: SendCell::new(instance_handle.clone()),
                 });
             }
         }
@@ -257,7 +288,7 @@ impl Editor for WebviewEditor {
         let webview_builder = configure_webview(
             context,
             &mut web_context,
-            webview_handle.clone(),
+            instance_handle.clone(),
             self.config.clone(),
             self.config.state.size.load(),
             self.params_changed.clone(),
@@ -269,14 +300,14 @@ impl Editor for WebviewEditor {
             .build_as_child(&window)
             .expect("failed to construct webview");
 
-        webview_handle.replace(Some(WebviewHandle {
+        instance_handle.replace(Some(WebViewInstance {
             webview: Rc::new(webview).clone(),
             web_context: Rc::new(web_context),
             temp_window: TempWindow::new(),
         }));
 
         return Box::new(EditorHandle {
-            webview_handle: webview_handle.clone(),
+            instance: SendCell::new(instance_handle.clone()),
         });
     }
 
@@ -291,30 +322,30 @@ impl Editor for WebviewEditor {
     }
 
     fn param_values_changed(&self) {
-        self.params_changed.store(true, Ordering::SeqCst);
+        self.params_changed.replace(true);
     }
 
     fn param_value_changed(&self, _id: &str, _normalized_value: f32) {
-        self.params_changed.store(true, Ordering::SeqCst);
+        self.params_changed.replace(true);
     }
 
     fn param_modulation_changed(&self, _id: &str, _modulation_offset: f32) {
-        self.params_changed.store(true, Ordering::SeqCst);
+        self.params_changed.replace(true);
     }
 }
 
 fn configure_webview<'a>(
     context: Arc<dyn GuiContext>,
     web_context: &'a mut WebContext,
-    webview_handle: Rc<RefCell<Option<WebviewHandle>>>,
-    config: Arc<Init>,
+    webview_handle: Rc<RefCell<Option<WebViewInstance>>>,
+    config: Rc<Init>,
     (width, height): (f64, f64),
-    params_changed: Arc<AtomicBool>,
+    params_changed: Rc<Cell<bool>>,
 ) -> WebViewBuilder<'a> {
     let mut webview_builder = WebViewBuilder::with_web_context(web_context);
 
     // Apply user configuration.
-    webview_builder = config.with_webview_fn.lock().unwrap()(webview_builder);
+    webview_builder = (*config.with_webview_fn)(webview_builder);
 
     let ipc_handler = {
         let webview_handle = Rc::downgrade(&webview_handle);
@@ -340,9 +371,9 @@ fn configure_webview<'a>(
         .with_ipc_handler(ipc_handler);
 
     let webview_builder = match config.source.clone() {
-        WebviewSource::URL(url) => webview_builder.with_url(url.as_str()),
-        WebviewSource::HTML(html) => webview_builder.with_html(html),
-        WebviewSource::DirPath(root) => webview_builder
+        WebViewSource::URL(url) => webview_builder.with_url(url.as_str()),
+        WebViewSource::HTML(html) => webview_builder.with_html(html),
+        WebViewSource::DirPath(root) => webview_builder
             .with_custom_protocol(
                 "wry".to_string(),
                 move |_id, request| match get_wry_response(&root, request) {
@@ -356,7 +387,7 @@ fn configure_webview<'a>(
                 },
             )
             .with_url("wry://localhost"),
-        WebviewSource::CustomProtocol { url, protocol } => {
+        WebViewSource::CustomProtocol { url, protocol } => {
             webview_builder.with_url(format!("{protocol}://localhost/{url}").as_str())
         }
     };
@@ -365,9 +396,9 @@ fn configure_webview<'a>(
 }
 
 fn ipc_handler(
-    params_changed: Arc<AtomicBool>,
+    params_changed: Rc<Cell<bool>>,
     webview: Rc<WebView>,
-    config: Arc<Init>,
+    config: Rc<Init>,
     context: Arc<dyn GuiContext>,
     request: Request<String>,
 ) {
@@ -389,15 +420,14 @@ fn ipc_handler(
 
     if message.starts_with("frame") {
         if let Err(err) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut editor = config.editor.lock().unwrap();
+            let mut editor = config.editor.borrow_mut();
 
-            let handler = &WindowHandler {
+            let mut cx = Context {
                 init: config.clone(),
                 webview: webview.clone(),
                 context: context.clone(),
                 params_changed: params_changed.clone(),
             };
-            let mut cx = Context { handler };
 
             editor.on_frame(&mut cx);
         })) {
@@ -410,12 +440,12 @@ fn ipc_handler(
         }
     } else if message.starts_with("text,") {
         let message = message.trim_start_matches("text,");
-        let mut editor = config.editor.lock().unwrap();
+        let mut editor = config.editor.borrow_mut();
         editor.on_message(&send_message, Message::Text(message.to_string()));
     } else if message.starts_with("binary,") {
         let message = message.trim_start_matches("binary,");
         let bytes = BASE64.decode(message.as_bytes()).unwrap();
-        let mut editor = config.editor.lock().unwrap();
+        let mut editor = config.editor.borrow_mut();
         editor.on_message(&send_message, Message::Binary(bytes));
     }
 }
@@ -423,64 +453,16 @@ fn ipc_handler(
 /// A handle to the editor window, returned from [`Editor::spawn`]. Host will
 /// call [`drop`] on it when the window is supposed to be closed.
 struct EditorHandle {
-    webview_handle: Rc<RefCell<Option<WebviewHandle>>>,
+    instance: SendCell<Rc<RefCell<Option<WebViewInstance>>>>,
 }
-
-unsafe impl Send for EditorHandle {}
 
 impl Drop for EditorHandle {
     fn drop(&mut self) {
-        self.webview_handle.borrow_mut().as_mut().map(|handle| {
-            handle.temp_window.reparent_from(&handle.webview);
+        self.instance.borrow_mut().as_mut().map(|instance| {
+            // Reparent the webview to a temporary window, so that it can be reused
+            // later. On MacOS this is a NOOP.
+            instance.temp_window.reparent_from(&instance.webview);
         });
-    }
-}
-
-/// This structure manages the editor window's event loop.
-struct WindowHandler {
-    init: Arc<Init>,
-    webview: Rc<WebView>,
-    context: Arc<dyn GuiContext>,
-    params_changed: Arc<AtomicBool>,
-}
-
-impl WindowHandler {
-    fn resize(&self, width: f64, height: f64) -> bool {
-        let old = self.init.state.size.swap((width, height));
-
-        if !self.context.request_resize() {
-            // Resize failed.
-            self.init.state.size.store(old);
-            return false;
-        }
-
-        // We may need to reimplement this ourselves.
-        // window.resize(Size { width: width as f64, height: height as f64 });
-
-        // FIXME: handle error?
-        let _ = self.webview.set_bounds(Rect {
-            position: Position::Logical(LogicalPosition { x: 0.0, y: 0.0 }),
-            size: wry::dpi::Size::Logical(LogicalSize { width, height }),
-        });
-
-        true
-    }
-
-    fn send_message(&self, message: Message) {
-        match message {
-            Message::Text(text) => {
-                let text = text.replace("`", r#"\`"#);
-                let script = format!("{PLUGIN_OBJ}.onmessage(`text`,`{}`);", text);
-                self.webview.evaluate_script(&script).ok();
-            }
-            Message::Binary(bytes) => {
-                let bytes = BASE64.encode(&bytes);
-                let script = format!(
-                    "{PLUGIN_OBJ}.onmessage(`binary`, {PLUGIN_OBJ}.decodeBase64(`{bytes}`));"
-                );
-                self.webview.evaluate_script(&script).ok();
-            }
-        }
     }
 }
 
@@ -508,6 +490,3 @@ fn get_wry_response(
         .body(content)
         .map_err(Into::into)
 }
-
-struct UnsafeSend<T>(T);
-unsafe impl<T> Send for UnsafeSend<T> {}

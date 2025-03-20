@@ -2,7 +2,7 @@ use std::{borrow::Cow, path::PathBuf, process::Command, sync::Arc};
 
 use nih_plug::prelude::*;
 use nih_plug_webview::{
-    Context, EditorHandler, Message, WebViewConfig, WebviewEditor, WebviewSource, WebviewState,
+    Context, EditorHandler, Message, WebViewConfig, WebViewEditor, WebViewSource, WebViewState,
 };
 use wry::http::Response;
 
@@ -13,16 +13,19 @@ fn main() {
 struct SimpleEditor {}
 
 impl SimpleEditor {
-    pub fn new(state: &Arc<WebviewState>) -> Option<Box<dyn Editor>> {
+    pub fn new(state: &Arc<WebViewState>) -> Option<Box<dyn Editor>> {
         let protocol = "nih".to_string();
 
         let config = WebViewConfig {
             title: "Simple Plugin".to_string(),
-            source: WebviewSource::CustomProtocol {
+            source: WebViewSource::CustomProtocol {
                 protocol: protocol.clone(),
                 url: "index.html".to_string(),
             },
-            workdir: PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/target/webview-workdir")),
+            workdir: PathBuf::from(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/target/webview-workdir"
+            )),
         };
 
         // TODO:
@@ -36,7 +39,7 @@ impl SimpleEditor {
         // - `examples` will provide path from which we'll be able to get `.js` files in custom
         //   protocol.
 
-        let editor = WebviewEditor::new_with_webview(
+        let editor = WebViewEditor::new_with_webview(
             SimpleEditor {},
             state,
             config,
@@ -90,7 +93,7 @@ impl EditorHandler for SimpleEditor {
 
 #[derive(Params)]
 pub struct SimpleParams {
-    editor_state: Arc<WebviewState>,
+    editor_state: Arc<WebViewState>,
 }
 
 pub struct SimplePlugin {
@@ -101,7 +104,7 @@ impl Default for SimplePlugin {
     fn default() -> Self {
         Self {
             params: Arc::new(SimpleParams {
-                editor_state: Arc::new(WebviewState::new(350.0, 250.0)),
+                editor_state: Arc::new(WebViewState::new(350.0, 250.0)),
             }),
         }
     }
