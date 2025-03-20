@@ -37,7 +37,6 @@ pub fn reparent_webview(webview: &Rc<WebView>, handle: ParentWindowHandle) -> Op
         _ => unreachable!(),
     };
 
-    // TODO: Handle reparenting gracefully.
     webview.reparent(hwnd as isize).unwrap();
 
     Some(())
