@@ -29,10 +29,10 @@ pub fn reparent_webview(webview: &Rc<WebView>, window: ParentWindowHandle) -> Op
 }
 
 #[cfg(target_os = "windows")]
-pub fn reparent_webview(webview: &Rc<WebView>, handle: ParentWindowHandle) -> Option<()> {
+pub fn reparent_webview(webview: &Rc<WebView>, window: ParentWindowHandle) -> Option<()> {
     use wry::WebViewExtWindows;
 
-    let hwnd = match handle {
+    let hwnd = match window {
         ParentWindowHandle::Win32Hwnd(hwnd) => hwnd,
         _ => unreachable!(),
     };
@@ -43,7 +43,7 @@ pub fn reparent_webview(webview: &Rc<WebView>, handle: ParentWindowHandle) -> Op
 }
 
 #[cfg(target_os = "linux")]
-pub fn reparent_webview(_webview: Rc<WebView>, _window: WindowHandle) -> Option<()> {
+pub fn reparent_webview(_webview: &Rc<WebView>, _window: ParentWindowHandle) -> Option<()> {
     None
 }
 
