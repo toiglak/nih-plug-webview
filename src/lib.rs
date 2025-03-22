@@ -178,6 +178,8 @@ impl Editor for WebViewEditor {
 
         let window = util::into_window_handle(window);
 
+        init_windowing_context();
+
         let mut web_context = WebContext::new(Some(self.config.workdir.clone()));
 
         let webview_builder = setup_webview(
@@ -225,6 +227,27 @@ impl Editor for WebViewEditor {
 
     fn param_modulation_changed(&self, _id: &str, _modulation_offset: f32) {
         self.params_changed.replace(true);
+    }
+}
+
+fn init_windowing_context() {
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+    ))]
+    {
+        use gtk::gdk::prelude::DisplayExtManual;
+
+        log::info!("Initializing GTK");
+
+        gtk::init().expect("Failed to initialize GTK");
+
+        if gtk::gdk::Display::default().unwrap().backend().is_wayland() {
+            panic!("`nih_plug_webview` (wry) doesn't support wayland");
+        }
     }
 }
 

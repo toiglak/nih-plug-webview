@@ -33,3 +33,7 @@ nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "17ba595
     "standalone",
 ] }
 tempfile = "3.14.0"
+
+
+[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies]
+gtk = { version = "0.18" }
