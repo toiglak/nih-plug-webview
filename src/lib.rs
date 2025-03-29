@@ -196,7 +196,7 @@ impl Editor for WebViewEditor {
             .expect("failed to construct webview");
 
         self.instance.replace(Some(WebViewInstance {
-            webview: Rc::new(webview).clone(),
+            webview: Rc::new(webview),
             web_context: Rc::new(web_context),
             temp_window: TempWindow::new(),
         }));
