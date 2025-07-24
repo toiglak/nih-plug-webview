@@ -5,7 +5,6 @@ use std::{
     sync::Arc,
 };
 
-use base64::{prelude::BASE64_STANDARD as BASE64, Engine};
 use crossbeam::atomic::AtomicCell;
 use nih_plug::{
     params::persist::PersistentField,
@@ -301,7 +300,7 @@ fn ipc_handler(
 ) {
     let message = request.into_body();
 
-    let send_message = |message: Message| util::send_message(&webview, message);
+    let send_message = |message: String| util::send_message(&webview, message);
 
     if message.starts_with("frame") {
         if let Err(err) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -321,15 +320,9 @@ fn ipc_handler(
             eprintln!("{:?}", err);
             std::process::exit(1);
         }
-    } else if message.starts_with("text,") {
-        let message = message.trim_start_matches("text,");
+    } else {
         let mut editor = editor.borrow_mut();
-        editor.on_message(&send_message, Message::Text(message.to_string()));
-    } else if message.starts_with("binary,") {
-        let message = message.trim_start_matches("binary,");
-        let bytes = BASE64.decode(message.as_bytes()).unwrap();
-        let mut editor = editor.borrow_mut();
-        editor.on_message(&send_message, Message::Binary(bytes));
+        editor.on_message(&send_message, message)
     }
 }
 

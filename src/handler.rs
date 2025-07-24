@@ -8,16 +8,10 @@ use wry::{
 
 use crate::WebViewState;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Message {
-    Text(String),
-    Binary(Vec<u8>),
-}
-
 pub trait EditorHandler: Send + 'static {
     fn init(&mut self, cx: &mut Context);
     fn on_frame(&mut self, cx: &mut Context);
-    fn on_message(&mut self, send_message: &dyn Fn(Message), message: Message);
+    fn on_message(&mut self, send_message: &dyn Fn(String), message: String);
 }
 
 pub struct Context {
@@ -29,7 +23,7 @@ pub struct Context {
 
 impl Context {
     /// Send a message to the plugin.
-    pub fn send_message(&mut self, message: Message) {
+    pub fn send_message(&mut self, message: String) {
         crate::util::send_message(&self.webview, message)
     }
 
