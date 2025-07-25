@@ -3,7 +3,6 @@ use std::{
     ptr::NonNull,
 };
 
-use base64::{prelude::BASE64_STANDARD as BASE64, Engine};
 use nih_plug::editor::ParentWindowHandle;
 use raw_window_handle::{
     AppKitWindowHandle, RawWindowHandle, Win32WindowHandle, WindowHandle, XcbWindowHandle,
@@ -14,7 +13,7 @@ const PLUGIN_OBJ: &str = "window.__NIH_PLUG_WEBVIEW__";
 
 pub fn send_message(webview: &WebView, message: String) {
     let text = message.replace("`", r#"\`"#);
-    let script = format!("{PLUGIN_OBJ}.onmessage(`text`,`{}`);", text);
+    let script = format!("{PLUGIN_OBJ}.onmessage(`{text}`);");
     webview.evaluate_script(&script).ok();
 }
 
