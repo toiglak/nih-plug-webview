@@ -320,9 +320,12 @@ fn ipc_handler(
             eprintln!("{:?}", err);
             std::process::exit(1);
         }
-    } else {
+    } else if message.starts_with("text,") {
         let mut editor = editor.borrow_mut();
-        editor.on_message(&send_message, message)
+        let message = message.trim_start_matches("text,");
+        editor.on_message(&send_message, message.to_string());
+    } else {
+        eprintln!("Unexpected ipc message type: {}", message);
     }
 }
 

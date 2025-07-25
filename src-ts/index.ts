@@ -18,7 +18,7 @@ export const IPC = {
    * @throws Will throw an error if the message type is not a string or Uint8Array.
    */
   send: (message: string) => {
-      plugin.postMessage(message);
+    plugin.postMessage(message);
   },
 };
 
