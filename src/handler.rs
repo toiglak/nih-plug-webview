@@ -9,9 +9,17 @@ use wry::{
 use crate::WebViewState;
 
 pub trait EditorHandler: Send + 'static {
-    fn init(&mut self, cx: &mut Context);
     fn on_frame(&mut self, cx: &mut Context);
-    fn on_message(&mut self, send_message: &dyn Fn(String), message: String);
+    /// This callback is executed when a message is received from the UI.
+    /// This can and should be used to handle initialization as well. (see the example below).
+    /// ### Init Example
+    /// ```rust
+    /// match &*message {
+    ///    "Ready" => cx.send_message("<your data here>".to_string()),
+    ///    ...
+    /// }
+    /// ```
+    fn on_message(&mut self, cx: &mut Context, message: String);
 }
 
 pub struct Context {

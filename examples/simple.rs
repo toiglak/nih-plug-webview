@@ -79,13 +79,11 @@ impl SimpleEditor {
 }
 
 impl EditorHandler for SimpleEditor {
-    fn init(&mut self, _: &mut Context) {}
-
     fn on_frame(&mut self, _: &mut Context) {}
 
-    fn on_message(&mut self, send_message: &dyn Fn(String), message: String) {
+    fn on_message(&mut self, cx: &mut Context, message: String) {
         println!("Received message: {:?}", message);
-        send_message("Hello from Rust!".to_string());
+        cx.send_message("Hello from Rust!".to_string());
     }
 }
 
