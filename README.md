@@ -1,11 +1,7 @@
 # `nih-plug-webview`
 
-```ts
-// nih-plug-webview
-declare global {
-  const host: {
-    onmessage: (type: "text" | "binary", message: string) => void;
-    postMessage: (message: string) => void;
-  };
-}
-```
+A fork of `httnn/nih-plug-webview` that uses `wry` directly, instead of `baseview`.
+
+### Usage
+
+See `examples/`.
