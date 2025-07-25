@@ -298,32 +298,33 @@ fn ipc_handler(
     params_changed: Rc<Cell<bool>>,
     request: Request<String>,
 ) {
-    let message = request.into_body();
+    if let Err(err) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut cx = Context {
+            state: state.clone(),
+            webview: webview.clone(),
+            context: context.clone(),
+            params_changed: params_changed.clone(),
+        };
+        let message = request.into_body();
+        handle_message(editor, &mut cx, message);
+    })) {
+        // NOTE: We catch panic here, because `baseview` doesn't run from the "main entry
+        // point", instead it schedules this handler as a task on the main thread. For
+        // some reason, on macos if you panic from a task the process will be forever
+        // stuck and you won't be able terminate it until you log out.
+        eprintln!("{:?}", err);
+        std::process::exit(1);
+    }
+}
 
-    let send_message = |message: String| util::send_message(&webview, message);
+fn handle_message(editor: Rc<RefCell<dyn EditorHandler>>, cx: &mut Context, message: String) {
+    let mut editor = editor.borrow_mut();
 
     if message.starts_with("frame") {
-        if let Err(err) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut cx = Context {
-                state: state.clone(),
-                webview: webview.clone(),
-                context: context.clone(),
-                params_changed: params_changed.clone(),
-            };
-
-            editor.borrow_mut().on_frame(&mut cx);
-        })) {
-            // NOTE: We catch panic here, because `baseview` doesn't run from the "main entry
-            // point", instead it schedules this handler as a task on the main thread. For
-            // some reason, on macos if you panic from a task the process will be forever
-            // stuck and you won't be able terminate it until you log out.
-            eprintln!("{:?}", err);
-            std::process::exit(1);
-        }
+        editor.on_frame(cx);
     } else if message.starts_with("text,") {
-        let mut editor = editor.borrow_mut();
         let message = message.trim_start_matches("text,");
-        editor.on_message(&send_message, message.to_string());
+        editor.on_message(cx, message.to_string());
     } else {
         eprintln!("Unexpected ipc message type: {}", message);
     }
