@@ -79,8 +79,6 @@ impl SimpleEditor {
 }
 
 impl EditorHandler for SimpleEditor {
-    fn init(&mut self, _: &mut Context) {}
-
     fn on_frame(&mut self, _: &mut Context) {}
 
     fn on_message(&mut self, send_message: &dyn Fn(String), message: String) {
