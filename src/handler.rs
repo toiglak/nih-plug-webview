@@ -10,13 +10,31 @@ use crate::WebViewState;
 
 pub trait EditorHandler: Send + 'static {
     fn on_frame(&mut self, cx: &mut Context);
+
     /// This callback is executed when a message is received from the UI.
-    /// This can and should be used to handle initialization as well. (see the example below).
-    /// ### Init Example
+    ///
+    /// ## About Initialization
+    ///
+    /// After the web content is loaded, you'll probably want to synchronize the UI with
+    /// the plugin state. A common way to do this is to send a "ready" message from
+    /// the webview to the plugin, which can then respond with the initial state.
+    ///
+    /// ```js
+    /// // You can also send "ready" from within your framework (`useEffect`, $effect, etc.)
+    /// document.addEventListener("DOMContentLoaded", () => {
+    ///     window.onmessage = (message) => {
+    ///         // Handle messages from the plugin
+    ///     };
+    ///     window.postMessage("ready");
+    /// });
+    /// ```
+    ///
     /// ```rust
-    /// match &*message {
-    ///    "Ready" => cx.send_message("<your data here>".to_string()),
-    ///    ...
+    /// // Then in Rust...
+    /// fn on_message(&mut self, cx: &mut Context, message: String) {
+    ///     if message == "ready" {
+    ///         cx.send_message(INITIAL_STATE);
+    ///     }
     /// }
     /// ```
     fn on_message(&mut self, cx: &mut Context, message: String);
