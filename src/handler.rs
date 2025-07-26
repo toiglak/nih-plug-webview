@@ -20,7 +20,7 @@ pub trait EditorHandler: Send + 'static {
     /// the webview to the plugin, which can then respond with the initial state.
     ///
     /// ```js
-    /// // You can also send "ready" from within your framework (`useEffect`, $effect, etc.)
+    /// // You can also send "ready" from within your framework's `useEffect`, $effect, etc.
     /// document.addEventListener("DOMContentLoaded", () => {
     ///     window.onmessage = (message) => {
     ///         // Handle messages from the plugin
