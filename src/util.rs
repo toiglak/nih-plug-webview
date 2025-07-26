@@ -9,11 +9,9 @@ use raw_window_handle::{
 };
 use wry::WebView;
 
-const PLUGIN_OBJ: &str = "window.__NIH_PLUG_WEBVIEW__";
-
 pub fn send_message(webview: &WebView, message: String) {
     let text = message.replace("`", r#"\`"#);
-    let script = format!("{PLUGIN_OBJ}.onmessage(`{text}`);");
+    let script = format!("window.plugin.__onmessage(`{text}`);");
     webview.evaluate_script(&script).ok();
 }
 

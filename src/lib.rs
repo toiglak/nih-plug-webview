@@ -173,8 +173,6 @@ impl Editor for WebViewEditor {
             }
         }
 
-        //// Create webview
-
         let window = util::into_window_handle(window);
 
         let mut web_context = WebContext::new(Some(self.config.workdir.clone()));
@@ -188,8 +186,6 @@ impl Editor for WebViewEditor {
             self.config.state.size.load(),
         );
 
-        // We use `build_as_child` over `build` because `build_as_child` knows that
-        // it runs as a child and so it knows not to consume all keyboard events.
         let webview = webview_builder
             .build_as_child(&window)
             .expect("failed to construct webview");
@@ -211,7 +207,7 @@ impl Editor for WebViewEditor {
     }
 
     fn set_scale_factor(&self, _factor: f32) -> bool {
-        return false; // FIXME, or does wry handle it?
+        return false; // FIXME, or does wry already handle it?
     }
 
     fn param_values_changed(&self) {

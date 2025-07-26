@@ -1,4 +1,4 @@
-use std::{borrow::Cow, path::PathBuf, process::Command, sync::Arc};
+use std::{borrow::Cow, path::PathBuf, sync::Arc};
 
 use nih_plug::prelude::*;
 use nih_plug_webview::{
@@ -28,48 +28,21 @@ impl SimpleEditor {
             )),
         };
 
-        // TODO:
-        //
-        // Probably create `examples` local crate, which will be `lib.rs` which will
-        // abstract the following bundling code and make it generic (so all requests for
-        // .ts are forwared to `bun` and then the output is returned).
-        //
-        // - Examples will import that library and use custom_protocol.
-        // - `examples` will run `build.rs` to build all the .ts files once.
-        // - `examples` will provide path from which we'll be able to get `.js` files in custom
-        //   protocol.
-
         let editor = WebViewEditor::new_with_webview(
             SimpleEditor {},
             state,
             config,
             move |w: wry::WebViewBuilder| {
-                w.with_custom_protocol(protocol.clone(), |_id, req| {
-                    let path = req.uri().path();
-                    println!("Request: {}", path);
-                    if path == "/index.html" {
+                w.with_custom_protocol(protocol.clone(), |_id, req| match req.uri().path() {
+                    "/index.html" => {
                         let body = Cow::Borrowed(include_bytes!("simple.html") as &[u8]);
                         Response::builder().body(body).unwrap()
-                    } else if path == "/simple.ts" {
-                        // Create temporary directory,
-                        // Run `bun build examples/simple.ts --outfile=temp/bundle.js`.
-                        // Read the file and return it here.
-                        let dir = tempfile::tempdir().unwrap();
-                        let output = Command::new("bun")
-                            .arg("build")
-                            .arg("examples/simple.ts")
-                            .arg("--outfile")
-                            .arg(dir.path().join("bundle.js"))
-                            .output()
-                            .unwrap();
-                        if !output.status.success() {
-                            panic!();
-                        }
-                        let bundle = std::fs::read(dir.path().join("bundle.js")).unwrap();
-                        Response::builder().body(Cow::Owned(bundle)).unwrap()
-                    } else {
-                        unreachable!()
                     }
+                    "/simple.js" => {
+                        let body = Cow::Borrowed(include_bytes!("simple.js") as &[u8]);
+                        Response::builder().body(body).unwrap()
+                    }
+                    _ => unreachable!(),
                 })
             },
         );

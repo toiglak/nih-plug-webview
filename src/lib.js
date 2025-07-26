@@ -1,11 +1,24 @@
-window.__NIH_PLUG_WEBVIEW__ = {
-  onmessage: function (message) {},
-  postMessage: function (message) {
+"use strict";
+
+let callbacks = [];
+
+window.plugin = {
+  listen: function (callback) {
+    callbacks.push(callback);
+  },
+  send: function (message) {
     if (typeof message !== "string") {
       throw new Error("Message must be a string");
     }
     // We attach `text,` prefix to differentiate this message from `frame` callback.
     window.ipc.postMessage("text," + message);
+  },
+
+  __onmessage: function (message) {
+    callbacks.forEach((callback) => callback(message));
+  },
+  __postMessage: function (message) {
+    window.ipc.postMessage(message);
   },
 };
 
@@ -13,7 +26,7 @@ window.__NIH_PLUG_WEBVIEW__ = {
 // TODO: Figure out how to remove this (or if we really want to remove this).
 function loop() {
   requestAnimationFrame(loop);
-  window.ipc.postMessage("frame");
+  window.plugin.__postMessage("frame");
 }
 
 loop();
