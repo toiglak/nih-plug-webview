@@ -1,6 +1,9 @@
-use std::{cell::Cell, rc::Rc, sync::Arc};
+use std::{rc::Rc, sync::Arc};
 
-use nih_plug::prelude::{GuiContext, ParamSetter};
+use nih_plug::{
+    params::Param,
+    prelude::{GuiContext, ParamSetter},
+};
 use wry::{
     dpi::{LogicalPosition, LogicalSize, Position, Size},
     Rect, WebView,
@@ -9,42 +12,88 @@ use wry::{
 use crate::WebViewState;
 
 pub trait EditorHandler: Send + 'static {
+    /// Called once per frame. Use this to update internal state or trigger side effects.
     fn on_frame(&mut self, cx: &mut Context);
 
-    /// This callback is executed when a message is received from the UI.
+    /// Called when a message is received from the UI.
     ///
     /// ## About Initialization
     ///
-    /// After the web content is loaded, you'll probably want to synchronize the UI with
-    /// the plugin state. A common way to do this is to send a "ready" message from
-    /// the webview to the plugin, which can then respond with the initial state.
+    /// After the webview loads, you’ll likely want to sync the UI with the plugin state.
+    /// A typical pattern is to send a `"ready"` message from the frontend once it’s mounted.
+    ///
+    /// In your frontend (e.g., in `DOMContentLoaded`, `onMount`, or `useEffect`):
     ///
     /// ```js
-    /// // You can also send "ready" from within your framework's `useEffect`, $effect, etc.
     /// document.addEventListener("DOMContentLoaded", () => {
-    ///     window.onmessage = (message) => {
+    ///     window.plugin.listen((message) => {
     ///         // Handle messages from the plugin
-    ///     };
-    ///     window.postMessage("ready");
+    ///     });
+    ///     window.plugin.send("ready");
     /// });
     /// ```
     ///
+    /// Then in Rust, handle that `"ready"` message and respond with the initial state:
+    ///
     /// ```rust
-    /// // Then in Rust...
     /// fn on_message(&mut self, cx: &mut Context, message: String) {
     ///     if message == "ready" {
-    ///         cx.send_message(INITIAL_STATE);
+    ///         cx.send_message(json!({
+    ///             "type": "init",
+    ///             "attack": self.params.attack.value(),
+    ///             "decay": self.params.decay.value(),
+    ///             "sustain": self.params.sustain.value(),
+    ///             "release": self.params.release.value(),
+    ///             // ... other parameters
+    ///         }).to_string());
     ///     }
     /// }
     /// ```
     fn on_message(&mut self, cx: &mut Context, message: String);
+
+    /// Called when one or more parameters change.
+    ///
+    /// By default, [`on_param_value_changed`] and [`on_param_modulation_changed`]
+    /// delegate to this method. Override those if you need finer control over
+    /// individual parameter changes.
+    ///
+    /// This method may be called for bulk updates (e.g., when DAW loads a preset).
+    ///
+    /// ## Example
+    ///
+    /// ```rust
+    /// fn on_params_changed(&mut self, cx: &mut Context) {
+    ///     cx.send_message(json!({
+    ///         "type": "params_changed",
+    ///         "attack": self.params.attack.value(),
+    ///         "decay": self.params.decay.value(),
+    ///         "sustain": self.params.sustain.value(),
+    ///         "release": self.params.release.value(),
+    ///     }).to_string());
+    /// }
+    /// ```
+    ///
+    /// [`on_param_value_changed`]: EditorHandler::on_param_value_changed
+    /// [`on_param_modulation_changed`]: EditorHandler::on_param_modulation_changed
+    fn on_params_changed(&mut self, cx: &mut Context);
+
+    /// Called when a parameter’s value changes.
+    fn on_param_value_changed(&mut self, cx: &mut Context, id: &str, normalized_value: f32) {
+        let _ = (id, normalized_value);
+        self.on_params_changed(cx);
+    }
+
+    /// Called when a parameter’s modulation changes.
+    fn on_param_modulation_changed(&mut self, cx: &mut Context, id: &str, modulation_offset: f32) {
+        let _ = (id, modulation_offset);
+        self.on_params_changed(cx);
+    }
 }
 
 pub struct Context {
     pub(crate) state: Arc<WebViewState>,
     pub(crate) webview: Rc<WebView>,
-    pub(crate) context: Arc<dyn GuiContext>,
-    pub(crate) params_changed: Rc<Cell<bool>>,
+    pub(crate) gui_context: Arc<dyn GuiContext>,
 }
 
 impl Context {
@@ -60,7 +109,7 @@ impl Context {
     pub fn resize_window(&mut self, width: f64, height: f64) -> bool {
         let old = self.state.size.swap((width, height));
 
-        if !self.context.request_resize() {
+        if !self.gui_context.request_resize() {
             // Resize failed.
             self.state.size.store(old);
             return false;
@@ -78,18 +127,38 @@ impl Context {
         true
     }
 
-    /// Returns `true` if plugin parameters have changed since the last call to this method.
-    pub fn params_changed(&mut self) -> bool {
-        self.params_changed.replace(false)
-    }
-
-    /// Returns a `ParamSetter` which can be used to set parameter values.
-    pub fn get_setter(&self) -> ParamSetter {
-        ParamSetter::new(&*self.context)
-    }
-
     /// Returns a reference to the `WebView` used by the editor.
     pub fn get_webview(&self) -> &WebView {
         &self.webview
+    }
+
+    /// Returns a `ParamSetter` which can be used to set parameter values.
+    pub fn get_param_setter(&self) -> ParamSetter {
+        ParamSetter::new(&*self.gui_context)
+    }
+
+    /// Begin an automation gesture for a parameter. This should be called when the
+    /// user starts dragging a knob or a slider.
+    pub fn set_param_begin<P: Param>(&self, param: &P) {
+        ParamSetter::new(&*self.gui_context).begin_set_parameter(param);
+    }
+
+    /// Set a parameter's value. This should be called as part of a gesture, between
+    /// `set_parameter_begin` and `set_parameter_end`.
+    pub fn set_param<P: Param>(&self, param: &P, value: P::Plain) {
+        ParamSetter::new(&*self.gui_context).set_parameter(param, value);
+    }
+
+    /// Set a parameter's value from a normalized `[0, 1]` value. This should be
+    /// called as part of a gesture, between `set_parameter_begin` and
+    /// `set_parameter_end`.
+    pub fn set_param_normalized<P: Param>(&self, param: &P, normalized: f32) {
+        ParamSetter::new(&*self.gui_context).set_parameter_normalized(param, normalized);
+    }
+
+    /// End an automation gesture for a parameter. This should be called when the
+    /// user releases the mouse button after dragging a knob or a slider.
+    pub fn set_param_end<P: Param>(&self, param: &P) {
+        ParamSetter::new(&*self.gui_context).end_set_parameter(param);
     }
 }

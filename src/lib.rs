@@ -1,9 +1,4 @@
-use std::{
-    cell::{Cell, RefCell},
-    path::PathBuf,
-    rc::Rc,
-    sync::Arc,
-};
+use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
 
 use crossbeam::atomic::AtomicCell;
 use nih_plug::{
@@ -115,7 +110,6 @@ impl<'a> PersistentField<'a, WebViewState> for Arc<WebViewState> {
 /// A webview-based plugin editor.
 pub struct WebViewEditor {
     config: SendCell<Config>,
-    params_changed: SendCell<Rc<Cell<bool>>>,
     instance: SendCell<Rc<RefCell<Option<WebViewInstance>>>>,
 }
 
@@ -148,8 +142,18 @@ impl WebViewEditor {
                 editor: Rc::new(RefCell::new(editor)),
                 setup_webview_fn: Rc::new(f),
             }),
-            params_changed: SendCell::new(Rc::new(Cell::new(false))),
             instance: SendCell::new(Rc::new(RefCell::new(None))),
+        }
+    }
+
+    fn create_context(&self) -> Context {
+        let state = self.config.state.clone();
+        let webview = self.instance.borrow().as_ref().unwrap().webview.clone();
+        let gui_context = self.instance.borrow().as_ref().unwrap().gui_context.clone();
+        Context {
+            state,
+            webview,
+            gui_context,
         }
     }
 }
@@ -179,9 +183,8 @@ impl Editor for WebViewEditor {
 
         let webview_builder = setup_webview(
             &self.config,
-            gui_context,
             &mut web_context,
-            self.params_changed.clone(),
+            gui_context.clone(),
             self.instance.clone(),
             self.config.state.size.load(),
         );
@@ -193,6 +196,7 @@ impl Editor for WebViewEditor {
         self.instance.replace(Some(WebViewInstance {
             webview: Rc::new(webview),
             web_context: Rc::new(web_context),
+            gui_context: Arc::clone(&gui_context),
             temp_window: TempWindow::new(),
         }));
 
@@ -211,15 +215,24 @@ impl Editor for WebViewEditor {
     }
 
     fn param_values_changed(&self) {
-        self.params_changed.replace(true);
+        let mut cx = self.create_context();
+        self.config.editor.borrow_mut().on_params_changed(&mut cx);
     }
 
-    fn param_value_changed(&self, _id: &str, _normalized_value: f32) {
-        self.params_changed.replace(true);
+    fn param_value_changed(&self, id: &str, normalized_value: f32) {
+        let mut cx = self.create_context();
+        self.config
+            .editor
+            .borrow_mut()
+            .on_param_value_changed(&mut cx, id, normalized_value);
     }
 
-    fn param_modulation_changed(&self, _id: &str, _modulation_offset: f32) {
-        self.params_changed.replace(true);
+    fn param_modulation_changed(&self, id: &str, modulation_offset: f32) {
+        let mut cx = self.create_context();
+        self.config
+            .editor
+            .borrow_mut()
+            .on_param_modulation_changed(&mut cx, id, modulation_offset);
     }
 }
 
@@ -235,9 +248,8 @@ struct Config {
 
 fn setup_webview<'a>(
     config: &Config,
-    gui_context: Arc<dyn GuiContext>,
     web_context: &'a mut WebContext,
-    params_changed: Rc<Cell<bool>>,
+    gui_context: Arc<dyn GuiContext>,
     instance: Rc<RefCell<Option<WebViewInstance>>>,
     (width, height): (f64, f64),
 ) -> WebViewBuilder<'a> {
@@ -259,7 +271,6 @@ fn setup_webview<'a>(
                 state.clone(),
                 editor.clone(),
                 context.clone(),
-                params_changed.clone(),
                 request,
             );
         }
@@ -291,15 +302,13 @@ fn ipc_handler(
     state: Arc<WebViewState>,
     editor: Rc<RefCell<dyn EditorHandler>>,
     context: Arc<dyn GuiContext>,
-    params_changed: Rc<Cell<bool>>,
     request: Request<String>,
 ) {
     if let Err(err) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut cx = Context {
             state: state.clone(),
             webview: webview.clone(),
-            context: context.clone(),
-            params_changed: params_changed.clone(),
+            gui_context: context.clone(),
         };
         let message = request.into_body();
         handle_message(editor, &mut cx, message);
@@ -330,6 +339,7 @@ struct WebViewInstance {
     webview: Rc<WebView>,
     #[expect(unused)]
     web_context: Rc<WebContext>,
+    gui_context: Arc<dyn GuiContext>,
     temp_window: TempWindow,
 }
 

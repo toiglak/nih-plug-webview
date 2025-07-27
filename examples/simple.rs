@@ -58,6 +58,8 @@ impl EditorHandler for SimpleEditor {
         println!("Received message: {:?}", message);
         cx.send_message("Hello from Rust!".to_string());
     }
+
+    fn on_params_changed(&mut self, _cx: &mut Context) {}
 }
 
 ///////////////////////////////////////////////////////////////////////////////
