@@ -7,21 +7,46 @@ use nih_plug_webview::{
 use wry::http::Response;
 
 fn main() {
+    // FIXME: `nih_export_standalone` doesn't work on macos due to a bug in
+    // nih-plug's window creation logic. Do note that it works fine when running as
+    // a plugin inside a DAW.
     nih_plug::nih_export_standalone::<SimplePlugin>();
 }
 
 struct SimpleEditor {}
+
+impl EditorHandler for SimpleEditor {
+    fn on_frame(&mut self, _cx: &mut Context) {
+        // This is where you would handle side effects.
+    }
+
+    fn on_message(&mut self, cx: &mut Context, message: String) {
+        println!("Received message: {:?}", message);
+        cx.send_message("Hello from Rust!".to_string());
+    }
+
+    fn on_params_changed(&mut self, _cx: &mut Context) {
+        // This is where you would react to parameter changes and update UI.
+    }
+}
 
 impl SimpleEditor {
     pub fn new(state: &Arc<WebViewState>) -> Option<Box<dyn Editor>> {
         let protocol = "nih".to_string();
 
         let config = WebViewConfig {
+            // The title of the window when running as a standalone application.
             title: "Simple Plugin".to_string(),
+            // Your source can be URL, an HTML string, or a custom protocol. Custom
+            // protocol allows you to serve files yourself without relying on a web
+            // server (see `with_custom_protocol` handler below).
             source: WebViewSource::CustomProtocol {
                 protocol: protocol.clone(),
                 url: "index.html".to_string(),
             },
+            // Ideally, the workdir should be a temporary directory within your
+            // application's data directory. For simplicity, we're using a fixed
+            // path under cargo's target/ directory.
             workdir: PathBuf::from(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/target/webview-workdir"
@@ -51,22 +76,13 @@ impl SimpleEditor {
     }
 }
 
-impl EditorHandler for SimpleEditor {
-    fn on_frame(&mut self, _: &mut Context) {}
-
-    fn on_message(&mut self, cx: &mut Context, message: String) {
-        println!("Received message: {:?}", message);
-        cx.send_message("Hello from Rust!".to_string());
-    }
-
-    fn on_params_changed(&mut self, _cx: &mut Context) {}
-}
-
-///////////////////////////////////////////////////////////////////////////////
-
 #[derive(Params)]
 pub struct SimpleParams {
-    editor_state: Arc<WebViewState>,
+    // Apart from regular parameters, you should also persist the webview state so
+    // that it can be restored when the plugin is reloaded. For example, size of
+    // the window.
+    #[persist = "webview_state"]
+    webview_state: Arc<WebViewState>,
 }
 
 pub struct SimplePlugin {
@@ -77,7 +93,7 @@ impl Default for SimplePlugin {
     fn default() -> Self {
         Self {
             params: Arc::new(SimpleParams {
-                editor_state: Arc::new(WebViewState::new(350.0, 250.0)),
+                webview_state: Arc::new(WebViewState::new(350.0, 250.0)),
             }),
         }
     }
@@ -116,6 +132,6 @@ impl Plugin for SimplePlugin {
     }
 
     fn editor(&mut self, _e: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-        SimpleEditor::new(&self.params.editor_state)
+        SimpleEditor::new(&self.params.webview_state)
     }
 }
