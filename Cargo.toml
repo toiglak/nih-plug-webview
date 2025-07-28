@@ -1,32 +1,29 @@
 [package]
 name = "nih_plug_webview"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = [
-    "Jakub Idzik <iglak.me@gmail.com>",
+    "iglak <iglak.me@gmail.com>",
     "Max Huttunen <max.huttunen@gmail.com>",
 ]
 license = "ISC"
-description = "An adapter to build editor GUIs with nih-plug using web-based tools"
+description = "A webview adapter for creating editor GUIs with nih-plug"
 
 [dependencies]
-base64 = "0.22.1"
 crossbeam = "0.8.4"
-mime_guess = "2.0.4"
 nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "17ba595e748927290eb72974bc528f11d1d20e89", default-features = false }
 raw-window-handle = "0.6.2"
 serde = ">=1.0"
 wry = { git = "https://github.com/toiglak/wry.git", branch = "v0.50.5-fork", features = [
     "tracing",
 ] }
-log = "0.4"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.60", features = ["Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6.0"
-objc2-app-kit = "0.3.0"
+objc2 = "0.6.1"
+objc2-app-kit = "0.3.1"
 
 [dev-dependencies]
 nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "17ba595e748927290eb72974bc528f11d1d20e89", features = [
