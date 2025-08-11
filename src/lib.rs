@@ -2,6 +2,7 @@ use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
 
 use crossbeam::atomic::AtomicCell;
 use nih_plug::{
+    log,
     params::persist::PersistentField,
     prelude::{Editor, GuiContext, ParentWindowHandle},
 };
@@ -75,7 +76,9 @@ pub struct WebViewConfig {
 pub struct WebViewState {
     /// The window's size in logical pixels before applying `scale_factor`.
     #[serde(with = "nih_plug::params::persist::serialize_atomic_cell")]
-    size: AtomicCell<(f64, f64)>,
+    window_size: AtomicCell<(f64, f64)>,
+    #[serde(skip)]
+    resize_pending: AtomicCell<bool>,
 }
 
 impl WebViewState {
@@ -83,20 +86,21 @@ impl WebViewState {
     /// before it is multiplied by the DPI scaling factor.
     pub fn new(width: f64, height: f64) -> WebViewState {
         WebViewState {
-            size: AtomicCell::new((width, height)),
+            window_size: AtomicCell::new((width, height)),
+            resize_pending: AtomicCell::new(false),
         }
     }
 
     /// Returns a `(width, height)` pair for the current size of the GUI in
     /// logical pixels.
-    pub fn size(&self) -> (f64, f64) {
-        self.size.load()
+    pub fn window_size(&self) -> (f64, f64) {
+        self.window_size.load()
     }
 }
 
 impl<'a> PersistentField<'a, WebViewState> for Arc<WebViewState> {
     fn set(&self, new_value: WebViewState) {
-        self.size.store(new_value.size.load());
+        self.window_size.store(new_value.window_size.load());
     }
 
     fn map<F, R>(&self, f: F) -> R
@@ -146,15 +150,15 @@ impl WebViewEditor {
         }
     }
 
-    fn create_context(&self) -> Context {
+    fn create_context(&self) -> Option<Context> {
         let state = self.config.state.clone();
-        let webview = self.instance.borrow().as_ref().unwrap().webview.clone();
-        let gui_context = self.instance.borrow().as_ref().unwrap().gui_context.clone();
-        Context {
+        let webview = self.instance.borrow().as_ref()?.webview.clone();
+        let gui_context = self.instance.borrow().as_ref()?.gui_context.clone();
+        Some(Context {
             state,
             webview,
             gui_context,
-        }
+        })
     }
 }
 
@@ -168,14 +172,20 @@ impl Editor for WebViewEditor {
         window: ParentWindowHandle,
         gui_context: Arc<dyn GuiContext>,
     ) -> Box<dyn std::any::Any + Send> {
+        log::debug!("Spawning editor");
+
         // If the webview was already created, reuse it.
         if let Some(handle) = self.instance.borrow().as_ref() {
             if let Some(_) = reparent::reparent_webview(&handle.webview, window) {
+                log::debug!("Reusing existing webview instance");
                 return Box::new(EditorHandle {
                     instance: SendCell::new(self.instance.clone()),
                 });
             }
         }
+
+        log::info!("Creating new webview instance");
+        log::debug!("Workdir: {:?}", self.config.workdir);
 
         let window = util::into_window_handle(window);
 
@@ -186,12 +196,14 @@ impl Editor for WebViewEditor {
             &mut web_context,
             gui_context.clone(),
             self.instance.clone(),
-            self.config.state.size.load(),
+            self.config.state.window_size.load(),
         );
 
         let webview = webview_builder
             .build_as_child(&window)
             .expect("failed to construct webview");
+
+        log::debug!("Webview constructed");
 
         self.instance.replace(Some(WebViewInstance {
             webview: Rc::new(webview),
@@ -200,27 +212,44 @@ impl Editor for WebViewEditor {
             temp_window: TempWindow::new(),
         }));
 
+        log::info!("Editor spawned successfully");
+
         return Box::new(EditorHandle {
             instance: SendCell::new(self.instance.clone()),
         });
     }
 
     fn size(&self) -> (u32, u32) {
-        let (a, b) = self.config.state.size.load();
+        let (a, b) = self.config.state.window_size.load();
         (a as u32, b as u32)
     }
 
-    fn set_scale_factor(&self, _factor: f32) -> bool {
-        return false; // FIXME, or does wry already handle it?
+    fn set_scale_factor(&self, factor: f32) -> bool {
+        log::info!("set_scale_factor: {}", factor);
+
+        // Update window size (and webview bounds) to match new scaled resolution.
+        //
+        // FIXME: Normally, we'd simply call cx.resize_window() here, but due to a
+        // bug in nih-plug, doing so causes a deadlock. To work around this, we
+        // defer that call to on_frame.
+        self.config.state.resize_pending.store(true);
+
+        true
     }
 
     fn param_values_changed(&self) {
-        let mut cx = self.create_context();
+        log::debug!("param_values_changed");
+        let mut cx = self.create_context().unwrap();
         self.config.editor.borrow_mut().on_params_changed(&mut cx);
     }
 
     fn param_value_changed(&self, id: &str, normalized_value: f32) {
-        let mut cx = self.create_context();
+        log::debug!(
+            "param_value_changed: '{}' value changed to {}",
+            id,
+            normalized_value
+        );
+        let mut cx = self.create_context().unwrap();
         self.config
             .editor
             .borrow_mut()
@@ -228,7 +257,12 @@ impl Editor for WebViewEditor {
     }
 
     fn param_modulation_changed(&self, id: &str, modulation_offset: f32) {
-        let mut cx = self.create_context();
+        log::debug!(
+            "param_modulation_changed: '{}' modulation changed by {}",
+            id,
+            modulation_offset
+        );
+        let mut cx = self.create_context().unwrap();
         self.config
             .editor
             .borrow_mut()
@@ -253,6 +287,7 @@ fn setup_webview<'a>(
     instance: Rc<RefCell<Option<WebViewInstance>>>,
     (width, height): (f64, f64),
 ) -> WebViewBuilder<'a> {
+    log::debug!("Setting up webview with source: {:?}", config.source);
     let mut webview_builder = WebViewBuilder::with_web_context(web_context);
 
     // Apply user configuration.
@@ -301,14 +336,14 @@ fn ipc_handler(
     webview: Rc<WebView>,
     state: Arc<WebViewState>,
     editor: Rc<RefCell<dyn EditorHandler>>,
-    context: Arc<dyn GuiContext>,
+    gui_context: Arc<dyn GuiContext>,
     request: Request<String>,
 ) {
     if let Err(err) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut cx = Context {
             state: state.clone(),
             webview: webview.clone(),
-            gui_context: context.clone(),
+            gui_context: gui_context.clone(),
         };
         let message = request.into_body();
         handle_message(editor, &mut cx, message);
@@ -317,7 +352,7 @@ fn ipc_handler(
         // point", instead it schedules this handler as a task on the main thread. For
         // some reason, on macos if you panic from a task the process will be forever
         // stuck and you won't be able terminate it until you log out.
-        eprintln!("{:?}", err);
+        log::error!("IPC handler panicked: {:?}", err);
         std::process::exit(1);
     }
 }
@@ -326,12 +361,23 @@ fn handle_message(editor: Rc<RefCell<dyn EditorHandler>>, cx: &mut Context, mess
     let mut editor = editor.borrow_mut();
 
     if message.starts_with("frame") {
+        // Handle set_scale_factor
+        if cx.state.resize_pending.swap(false) {
+            let (width, height) = cx.state.window_size();
+            log::debug!("Executing deferred resize to {}x{}", width, height);
+            // nih-plug already takes care of setting the window size to
+            // Editor::size() multiplied by the scale factor, so we just need to
+            // pass in the logical size.
+            cx.resize_window(width, height);
+        }
+
         editor.on_frame(cx);
     } else if message.starts_with("text,") {
-        let message = message.trim_start_matches("text,");
-        editor.on_message(cx, message.to_string());
+        let text_message = message.trim_start_matches("text,");
+        log::debug!("Received message from webview");
+        editor.on_message(cx, text_message.to_string());
     } else {
-        eprintln!("Unexpected ipc message type: {}", message);
+        log::warn!("Unexpected ipc message type: {}", message);
     }
 }
 
@@ -351,6 +397,7 @@ struct EditorHandle {
 
 impl Drop for EditorHandle {
     fn drop(&mut self) {
+        log::debug!("Editor handle dropped");
         self.instance.borrow_mut().as_mut().map(|instance| {
             // Reparent the webview to a temporary window, so that it can be reused
             // later. On MacOS this is a NOOP.

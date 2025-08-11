@@ -1,6 +1,7 @@
 use std::{rc::Rc, sync::Arc};
 
 use nih_plug::{
+    log,
     params::Param,
     prelude::{GuiContext, ParamSetter},
 };
@@ -99,6 +100,7 @@ pub struct Context {
 impl Context {
     /// Send a message to the plugin.
     pub fn send_message(&mut self, message: String) {
+        log::debug!("Sending message to webview: {}", message);
         crate::util::send_message(&self.webview, message)
     }
 
@@ -107,22 +109,25 @@ impl Context {
     /// Do note that plugin host may refuse to resize the window, in which case
     /// this method will return `false`.
     pub fn resize_window(&mut self, width: f64, height: f64) -> bool {
-        let old = self.state.size.swap((width, height));
+        log::debug!("Requesting resize to {}x{} (logical pixels)", width, height);
+        let old = self.state.window_size.swap((width, height));
 
         if !self.gui_context.request_resize() {
+            log::warn!("Host refused to resize the window.");
             // Resize failed.
-            self.state.size.store(old);
+            self.state.window_size.store(old);
             return false;
         }
 
         // We may need to reimplement this ourselves.
         // window.resize(Size { width: width as f64, height: height as f64 });
 
-        // FIXME: handle error?
-        let _ = self.webview.set_bounds(Rect {
+        if let Err(e) = self.webview.set_bounds(Rect {
             position: Position::Logical(LogicalPosition { x: 0.0, y: 0.0 }),
             size: Size::Logical(LogicalSize { width, height }),
-        });
+        }) {
+            log::warn!("Failed to set webview bounds: {}", e);
+        }
 
         true
     }
