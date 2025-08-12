@@ -1,4 +1,12 @@
-use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
+use std::{
+    cell::RefCell,
+    path::PathBuf,
+    rc::Rc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
 use crossbeam::atomic::AtomicCell;
 use nih_plug::{
@@ -79,6 +87,11 @@ pub struct WebViewState {
     window_size: AtomicCell<(f64, f64)>,
     #[serde(skip)]
     resize_pending: AtomicCell<bool>,
+    // NOTE: this code has been adapted from nih-plug-vizia:
+    // https://github.com/robbert-vdh/nih-plug/blob/master/nih_plug_vizia/
+    /// Whether the editor's window is currently open.
+    #[serde(skip)]
+    open: AtomicBool,
 }
 
 impl WebViewState {
@@ -88,6 +101,7 @@ impl WebViewState {
         WebViewState {
             window_size: AtomicCell::new((width, height)),
             resize_pending: AtomicCell::new(false),
+            open: AtomicBool::new(false),
         }
     }
 
@@ -95,6 +109,12 @@ impl WebViewState {
     /// logical pixels.
     pub fn window_size(&self) -> (f64, f64) {
         self.window_size.load()
+    }
+
+    /// Whether the GUI is currently visible.
+    // Called `is_open()` instead of `open()` to avoid the ambiguity.
+    pub fn is_open(&self) -> bool {
+        self.open.load(Ordering::Acquire)
     }
 }
 
@@ -113,6 +133,7 @@ impl<'a> PersistentField<'a, WebViewState> for Arc<WebViewState> {
 
 /// A webview-based plugin editor.
 pub struct WebViewEditor {
+    webview_state: Arc<WebViewState>,
     config: SendCell<Config>,
     instance: SendCell<Rc<RefCell<Option<WebViewInstance>>>>,
 }
@@ -138,6 +159,7 @@ impl WebViewEditor {
         f: impl Fn(WebViewBuilder) -> WebViewBuilder + Send + Sync + 'static,
     ) -> WebViewEditor {
         WebViewEditor {
+            webview_state: state.clone(),
             config: SendCell::new(Config {
                 title: config.title,
                 source: config.source,
@@ -174,6 +196,8 @@ impl Editor for WebViewEditor {
     ) -> Box<dyn std::any::Any + Send> {
         log::debug!("Spawning editor");
 
+        self.webview_state.open.store(true, Ordering::Release);
+
         // If the webview was already created, reuse it.
         if let Some(handle) = self.instance.borrow().as_ref() {
             if let Some(_) = reparent::reparent_webview(&handle.webview, window) {
@@ -206,6 +230,7 @@ impl Editor for WebViewEditor {
         log::debug!("Webview constructed");
 
         self.instance.replace(Some(WebViewInstance {
+            webview_state: self.webview_state.clone(),
             webview: Rc::new(webview),
             web_context: Rc::new(web_context),
             gui_context: Arc::clone(&gui_context),
@@ -225,6 +250,15 @@ impl Editor for WebViewEditor {
     }
 
     fn set_scale_factor(&self, factor: f32) -> bool {
+        // NOTE: this is more functionality ported from nih-plug-vizia.
+        // this might not be necessary for us.
+
+        // If the editor is currently open then the host must not change the current HiDPI scale as
+        // we don't have a way to handle that. Ableton Live does this.
+        if self.webview_state.is_open() {
+            return false;
+        }
+
         log::info!("set_scale_factor: {}", factor);
 
         // Update window size (and webview bounds) to match new scaled resolution.
@@ -382,6 +416,7 @@ fn handle_message(editor: Rc<RefCell<dyn EditorHandler>>, cx: &mut Context, mess
 }
 
 struct WebViewInstance {
+    webview_state: Arc<WebViewState>,
     webview: Rc<WebView>,
     #[expect(unused)]
     web_context: Rc<WebContext>,
@@ -399,6 +434,7 @@ impl Drop for EditorHandle {
     fn drop(&mut self) {
         log::debug!("Editor handle dropped");
         self.instance.borrow_mut().as_mut().map(|instance| {
+            instance.webview_state.open.store(false, Ordering::Release);
             // Reparent the webview to a temporary window, so that it can be reused
             // later. On MacOS this is a NOOP.
             instance.temp_window.reparent_from(&instance.webview);
