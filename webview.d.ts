@@ -11,6 +11,13 @@ interface Plugin {
    * @param {string} message - Message to send (must be a string)
    */
   send: (message: string) => void;
+
+  /**
+   * Request the plugin host to resize the window
+   * @param {number} width - New width in logical pixels
+   * @param {number} height - New height in logical pixels
+   */
+  resize: (width: number, height: number) => void;
 }
 
 declare global {

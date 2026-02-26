@@ -360,7 +360,18 @@ fn ipc_handler(
 fn handle_message(editor: Rc<RefCell<dyn EditorHandler>>, cx: &mut Context, message: String) {
     let mut editor = editor.borrow_mut();
 
-    if message.starts_with("frame") {
+    // Intercept internal webview commands silently
+    if message.starts_with("__nih_webview:resize:") {
+        let coords = message.replace("__nih_webview:resize:", "");
+        if let Some((w, h)) = coords.split_once(',') {
+            if let (Ok(width), Ok(height)) = (w.parse::<f64>(), h.parse::<f64>()) {
+                cx.resize_window(width, height);
+                return;
+            }
+        }
+    }
+
+    if message.starts_with("__nih_webview:frame") {
         // Handle set_scale_factor
         if cx.state.resize_pending.swap(false) {
             let (width, height) = cx.state.window_size();

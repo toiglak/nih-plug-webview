@@ -22,6 +22,10 @@ window.plugin = {
     window.plugin.__postMessage("text," + message);
   },
 
+  resize: function (width, height) {
+    window.plugin.__postMessage("__nih_webview:resize:" + width + "," + height);
+  },
+
   // Internal method to handle incoming messages
   __onmessage: function (message) {
     // Iterate over all registered callbacks
@@ -38,7 +42,7 @@ window.plugin = {
 // TODO: Figure out how to remove this (or if we really want to remove this).
 function loop() {
   requestAnimationFrame(loop);
-  window.plugin.__postMessage("frame");
+  window.plugin.__postMessage("__nih_webview:frame");
 }
 
 loop();
